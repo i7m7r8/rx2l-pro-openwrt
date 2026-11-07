@@ -55,13 +55,19 @@
 
 / {
 	/*
-	 * "Tenda RX2L Pro" is not decoration: realtek_board_detect() in
-	 * files/target/linux/realtek/base-files/lib/realtek.sh matches the
-	 * /proc/cpuinfo `machine` line against *"RX2L Pro". The 4.14 tree fills
-	 * that line from this `model`; if a 6.18 rtl819x kernel does the same,
-	 * changing this string without changing realtek.sh leaves
-	 * /tmp/sysinfo/board_name unset, board.d/02_network falls through its
-	 * case, and no LAN or WAN interface is ever created.
+	 * The FIRST string here becomes /tmp/sysinfo/board_name on this base
+	 * (package/base-files/files/lib/preinit/02_sysinfo: `strings
+	 * /proc/device-tree/compatible | head -1`), and that is what the
+	 * board.d scripts and the upgrade path match on:
+	 *   - etc/board.d/02_network: interfaces + the per-unit MAC read out of
+	 *     the CFG partition;
+	 *   - lib/upgrade/platform.sh: the "cr6c" magic gate before a sysupgrade.
+	 * Change this string and both silently stop matching -- the MAC would
+	 * never be set and the image check would fall through to "accept
+	 * anything". There is no realtek_board_detect() on this base any more
+	 * (the 4.14 target wrote board_name from /proc/cpuinfo; nothing calls it
+	 * now), so the DTS is the single source of truth.
+	 * model = "Tenda RX2L Pro" above is only cosmetic (/tmp/sysinfo/model).
 	 */
 	compatible = "tenda,rx2l-pro", "tenda,ax2-pro-v2", "realtek,rtl8197f-soc";
 	model = "Tenda RX2L Pro";

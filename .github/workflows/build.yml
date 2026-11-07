@@ -168,6 +168,23 @@ jobs:
             grep -qx "${sym}=y" "$kcfg" 2>/dev/null || {
               echo "!!! ${sym}=y missing from $kcfg" >&2; rc=1; }
           done
+          # 5. board_name is the DTS compatible's FIRST string on this base
+          #    (02_sysinfo: strings /proc/device-tree/compatible | head -1).
+          #    Every consumer must match it. When it did not, the MAC read out
+          #    of CFG never ran and the cr6c sysupgrade gate fell through to
+          #    "accept anything" -- both silently, both only on hardware.
+          bname=$(sed -n 's/.*compatible *= *"\([^"]*\)".*/\1/p' "$dts" | head -1)
+          short="${bname##*,}"
+          for f in files/target/linux/rtl819x/base-files/etc/board.d/02_network \
+                   files/target/linux/rtl819x/base-files/lib/upgrade/platform.sh; do
+            if ! grep -q "\*${short}" "$f"; then
+              echo "!!! $f has no case arm matching board_name '$bname'" >&2
+              echo "    (expected a '*${short}' pattern; the DTS compatible string" >&2
+              echo "     is what this base writes to /tmp/sysinfo/board_name)" >&2
+              rc=1
+            fi
+          done
+
           # NOTE: $kcfg is a whole-file override of the overlay's subtarget
           # config, so an overlay update to that file lands under ours. build.sh
           # prints every such override ("files/ overrides overlay file: ...");
