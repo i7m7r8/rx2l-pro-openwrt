@@ -235,3 +235,31 @@ Still open, and unchanged by this: the port map itself (items 4 and 5 above), so
 `02_network` still does not emit a `switch0` stanza. First boot must therefore be
 treated as "switch in power-on state": reachability via the 2.4 GHz AP or serial,
 not via a presumed LAN jack.
+
+## The switch-wiring patch, checked against the real kernel stack
+
+`patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch` appends to
+`drivers/net/phy/{Makefile,Kconfig}`, so two things had to be true before it
+could be trusted. Both were tested locally, not assumed:
+
+1. **The context is the real 6.18.41 file.** The patch was built against the
+   `v6.18` tag; the port pins `LINUX_VERSION-6.18 = .41`. `gregkh/linux`
+   `v6.18.41`'s `drivers/net/phy/{Makefile,Kconfig}` are byte-identical to what
+   the patch was cut from, so the context is valid for the actual base.
+2. **It survives the generic patch stack.** An earlier claim in my own notes --
+   "no patch touches drivers/net/phy" -- was wrong: OpenWrt's
+   `target/linux/generic/hack-6.18/700-swconfig_switch_drivers.patch` edits
+   exactly those two files, adding `config SWCONFIG` and
+   `obj-$(CONFIG_SWCONFIG) += swconfig.o`. Replayed in order on a pristine tree:
+
+   ```
+   700 (phy hunks only):  Kconfig hunk at 544 (+74), Makefile hunk at 113 (+15)
+   999 on top:            applies, offsets only, no rejects
+   ```
+
+   which is also why `depends on SWCONFIG` in our Kconfig entry resolves: 700 is
+   what defines that symbol.
+
+So the chain is: 700 defines SWCONFIG → our 999 defines RTL8367B_PHY (depends on
+it) and adds the objects → the subtarget config sets both → the driver is built
+for the first time.
