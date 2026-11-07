@@ -173,3 +173,30 @@ boot harder to reason about.
 If it compiles, the 5 GHz sequence becomes: enable PCI (config only) → boot
 validate on the bench → then the SKD port. If it does not, the failure will name
 which of the five rows above moved.
+
+## What the stock 5 GHz stack needs at runtime (from the rootfs, not the kernel)
+
+The vendor rootfs carries **no firmware blob** for the radio — `find` over the
+whole tree returns only the module metadata under
+`/lib/modules/4.4.176/*.bin`. `rtk_wifi6` is built into the kernel with its
+firmware embedded, so a port does not have to ship an `rtw*.bin` under
+`/lib/firmware/`; it has to carry the firmware in the driver image, exactly as the
+G6 SKD does.
+
+What *is* on the rootfs, under `/etc_ro/wlan/`:
+
+| path | what |
+|---|---|
+| `rtl8832bre/RFE50/**` | 38 text-table files: `PHY_REG.txt`, `PHY_REG_GAIN.txt`, `RadioA.txt`, `RadioB.txt`, `TXPWR_ByRate.txt`, `TXPWR_LMT.txt`, `TXPWR_LMT_RU.txt`, `TXPWR_TrackTSSI.txt`, per band (`AP_2G`, `AP_5G`, and `PON_*` variants) |
+| `rtl8832bre/RFE50/*.txt` (top level) | the active copies; the per-band subdirectories are stubs — see the calibration note in `port/05` |
+| `.wlan_rfhw.cfg` | the factory apmib template (49 `HW_*` keys) |
+| `ther.conf` | thermal trip points, one line per radio: `wlan0 56 52 45 …`, `wlan1 70 65 58 …` |
+
+So the 5 GHz bring-up surface is: one driver with embedded firmware, and a
+directory of text calibration tables read at `flash_set para_path=/etc/wlan/`
+(the vendor's `rcS` line). Nothing in that path is a binary blob we would have to
+reverse -- which is why track 06 can be a *port*, not an RE exercise.
+
+The `ther.conf` split is worth noting for later: the two radios have different
+cut-offs (56 vs 70 °C), which is the kind of per-radio constant a shared thermal
+handler would get wrong.
