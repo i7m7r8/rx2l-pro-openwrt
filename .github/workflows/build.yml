@@ -80,8 +80,14 @@ jobs:
           #    subtarget enables the symbols its own board needs -- but only for
           #    the kernel this port actually builds (6.18, from the platform
           #    overlay's KERNEL_PATCHVER). A config-4.14 is stale by definition.
+          # 6.18 is the kernel this port builds (the platform overlay's
+          # KERNEL_PATCHVER), so supplying files-6.18/, patches-6.18/ or a
+          # config-6.18 IS the supported mechanism -- that is how the time-of-day
+          # kernel files and the switch-wiring patch get in. Anything pinned to
+          # another version is 4.14-era debris and must not shadow anything.
           stale=$(find files -maxdepth 8 \( -name 'files-*.*' -o -name 'patches-*.*' \
-                    -o -name 'config-[0-9]*' \) -print 2>/dev/null | grep -v '/config-6\.18$')
+                    -o -name 'config-[0-9]*' \) -print 2>/dev/null \
+                    | grep -vE '/(files|patches|config)-6\.18$')
           if [ -n "$stale" ]; then
             echo "!!! kernel-versioned material inside files/ (belongs under port/," >&2
             echo "    or is pinned to a kernel this port does not build):" >&2
