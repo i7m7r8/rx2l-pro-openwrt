@@ -76,6 +76,16 @@ drv_rtl8192cd_init_iface_config() {
 	config_add_int reassociation_deadline
 }
 
+# netifd's wireless layer calls these two by name whenever a wifi-iface is set
+# up with vlan/station options, whether or not the driver cares. The platform's
+# own handler for this SoC defines them as no-ops; ours (written for this board
+# and its RTL8192CD.dat config path) never did, so any config that walked into
+# that path -- a station-mode or multi-SSID stanza -- would have failed with a
+# "function not defined" rather than a clear message. No-ops, same as the
+# platform's, because the vendor driver has neither concept.
+drv_rtl8192cd_init_vlan_config() { :; }
+drv_rtl8192cd_init_station_config() { :; }
+
 drv_rtl8192cd_cleanup() {
 	return 0
 }
