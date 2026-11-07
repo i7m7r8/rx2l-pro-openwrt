@@ -1,0 +1,20 @@
+# the pinned base tree build.sh clones into; never vendored
+/openwrt/
+/MANIFEST-built.txt
+
+# vendor firmware and anything derived from it stays out of this repo
+*.dec.bin
+*.TDE01*
+/dec/
+/mtd*.bin
+*.cfg
+!files/**/*.cfg
+
+# local, secret-bearing build profiles (see build.sh's PROFILE=)
+/profile/
+*.private.config
+
+.DS_Store
+*.o
+*.d
+.tmp/

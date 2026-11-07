@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Tenda RX2L Pro (devModel RX2LProV1.0, internal AX2_PRO_V2) on Realtek RTL8197F.
+ *
+ * Every number in this file comes from the device itself, not from a datasheet:
+ *   - /proc/cpuinfo   system type "RTL8197F", MIPS 24Kc V8.5, BogoMIPS 666.41
+ *   - /proc/meminfo   MemTotal 115744 kB  -> 128 MiB physical
+ *   - /proc/cmdline   console=ttyS0,115200 root=/dev/mtdblock4
+ *   - /proc/mtd       the exact partition table below, copied verbatim
+ *   - mtd3 dump       the cr6c container header (start_addr 0x80d00000,
+ *                     burn_addr 0x40000) - see notes/cr6c-container.md
+ */
+
+/dts-v1/;
+
+#include "RTL8197F.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	compatible = "tenda,rx2l-pro", "realtek,rtl8197f-soc";
+	model = "Tenda RX2L Pro";
+
+	memory {
+		device_type = "memory";
+		/* 128 MiB: the vendor kernel reports MemTotal 115744 kB, i.e.
+		 * 128 MiB minus its own reservations (SDMA/phytd buffers). Do not
+		 * lower this to the reported figure -- that number is what is left,
+		 * not what is there. */
+		reg = <0x0 0x8000000>;
+	};
+
+	/* ⚠ NO pstore/ramoops carve-out here, deliberately. Inherited from the
+	 * ADCDS DIR-842 R1 port, whose measurement is in that repo's
+	 * docs/COLD-BOOT-TX-WEDGE.md (not vendored here): on RTL8197F an attached
+	 * ramoops wedges CPU-originated TX -- RX stays fine while every frame the
+	 * box itself sends is dropped. Unconfirmed on this board, and cheap to
+	 * keep out, so it stays out.
+	 */
+
+	chosen {
+		/* 115200, not the 38400 the DIR-842 reference uses: read off this
+		 * board's own /proc/cmdline. hwnat is NOT set here on purpose --
+		 * arming hardware NAT off the cmdline before the ASIC tables are
+		 * warm breaks the datapath on this SoC family (measured on the
+		 * reference board). Arm it from userspace after bring-up. */
+		bootargs = "console=ttyS0,115200";
+	};
+
+	/* TODO(port-facts): gpio-keys and gpio-leds are intentionally empty.
+	 * The vendor decodes them from gpiom.ko's dev_buttons/dev_leds tables
+	 * (the reference port found them at file offset 0x31a0 / 0x3150 with
+	 * strides 13 / 20). Until this board's tables are decoded, declaring
+	 * nothing is the safe state: on the reference board an LED node on the
+	 * wrong pin held the external switch in reset.
+	 */
+};
+
+&wmac {
+	/* On-SoC 2.4 GHz WMAC block. status="okay" only makes the bring-up
+	 * driver probe it; it is not a working radio until the driver side
+	 * lands (see README, stage 3). pcie1 shares its cpuintc IRQ 6 and must
+	 * stay disabled while this is enabled. */
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&spi0 {
+	status = "okay";
+
+	m25p80@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <41000000>;
+
+		/* Verbatim from the device's /proc/mtd (erasesize 0x10000 throughout):
+		 *   mtd1 00030000 Bootloader   mtd5 00010000 CFM
+		 *   mtd2 00010000 CFG           mtd6 00010000 CFM_BACKUP
+		 *   mtd3 00f80000 KernelFS      mtd7 00010000 MISC2
+		 *   mtd4 00bbf7ee RootFS  (a window inside mtd3, NOT a sibling)
+		 * mtd0 "ALL" spans 0x0..0xff0000, so the last erase block
+		 * (0xff0000..0x1000000) belongs to no partition.
+		 *
+		 * boot/Bootloader and CFG are sacred: Bootloader holds the stage-2
+		 * that serves `disaster_web` recovery, CFG the vendor config. CFM
+		 * holds per-unit RF calibration and MACs -- read-only, never in any
+		 * image we write.
+		 */
+		partition@0 {
+			label = "Bootloader";
+			reg = <0x0 0x30000>;
+			read-only;
+		};
+
+		partition@30000 {
+			label = "CFG";
+			reg = <0x30000 0x10000>;
+			read-only;
+		};
+
+		/* The one partition we write. It carries the whole cr6c image:
+		 * 16-byte header, kernel payload, 2-byte cvimg checksum, squashfs,
+		 * then the JFFS2/overlay area to the end. mtdsplit_cvimg parses it. */
+		partition@40000 {
+			label = "firmware";
+			reg = <0x40000 0xf80000>;
+		};
+
+		partition@fc0000 {
+			label = "CFM";
+			reg = <0xfc0000 0x10000>;
+			read-only;
+		};
+
+		partition@fd0000 {
+			label = "CFM_BACKUP";
+			reg = <0xfd0000 0x10000>;
+			read-only;
+		};
+
+		partition@fe0000 {
+			label = "MISC2";
+			reg = <0xfe0000 0x10000>;
+			read-only;
+		};
+	};
+};
+
+/* TODO(port-facts): external switch. The reference board (DIR-842 R1) drives an
+ * RTL8367S over bit-banged SMI on gpio0 18/19 with cpu_port = <6>. Whether the
+ * RX2L Pro has one, or runs purely on the SoC's built-in switch core
+ * (ethernet@18010000), is decided by the vendor module inventory and the
+ * /proc/rtl865x* interfaces in the stock rootfs -- do not guess this node in.
+ * Until it is confirmed, the built-in ethernet node in RTL8197F.dtsi stands.
+ */

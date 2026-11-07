@@ -1,0 +1,74 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'files/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'Dockerfile'
+      - 'build.sh'
+      - 'feeds.conf'
+      - 'seed.config'
+      - '.github/workflows/build.yml'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast gate: the two tools that decide whether an image is trustworthy must
+  # round-trip against a known container before we burn hours on a build.
+  selftest:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build tenda-wrap
+        run: |
+          gcc -Wall -Wextra -Werror -O2 -o /tmp/tenda-wrap \
+            files/tools/firmware-utils/src/tenda-wrap.c
+      - name: Round-trip a synthetic container
+        run: python3 tests/test_container.py
+
+  # The real build. Bullseye because the base tree is a 2020 fork: kernel 4.14,
+  # gcc 8.4, python2 host tools. OpenWrt also refuses to build as root, which is
+  # what the container's `builder` user (uid 1000, the GitHub runner's uid) is for.
+  openwrt:
+    needs: selftest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the toolchain container
+        run: docker build -t owrt-rx2lpro .
+
+      - name: Build OpenWrt
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/build:rw \
+            -w /build \
+            -e HOME=/github-home \
+            owrt-rx2lpro bash -c '
+              mkdir -p /github-home && export HOME=/github-home &&
+              ./build.sh
+            '
+
+      - name: Record what was produced
+        run: |
+          ls -la openwrt/bin/targets/realtek/rtl8197f/ || true
+          cat MANIFEST-built.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rx2lpro-images
+          path: |
+            openwrt/bin/targets/realtek/rtl8197f/*.bin
+            openwrt/bin/targets/realtek/rtl8197f/*.itb
+            MANIFEST-built.txt
+          if-no-files-found: error
+          retention-days: 30

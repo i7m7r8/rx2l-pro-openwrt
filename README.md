@@ -1,0 +1,190 @@
+# OpenWrt for the Tenda RX2L Pro
+
+Port of OpenWrt to the **Tenda RX2L Pro** (`devModel RX2LProV1.0`, internal
+`AX2_PRO_V2`), a Realtek **RTL8197F** router with 16 MiB SPI NOR and 128 MiB
+RAM, shipping vendor firmware `V16.03.51.18(6989)_cn`.
+
+The device support here is derived from the
+[ADCMS/OpenWrt DIR-842 R1 port](https://github.com/ADCDS/openwrt-dlink-dir842-r1)
+(same SoC, hardware-proven) and adapted to this board's own flash map,
+console speed, RAM size and MAC layout. See `PROVENANCE.md`.
+
+---
+
+## Board facts, and how each was obtained
+
+| item | value | source |
+|---|---|---|
+| SoC | RTL8197F, MIPS 24Kc V8.5, single core | `/proc/cpuinfo` on the device |
+| RAM | 128 MiB | `/proc/meminfo` (`MemTotal: 115744 kB` = 128 MiB minus driver reservations) |
+| console | `ttyS0` at **115200** | `/proc/cmdline` |
+| stock root | `/dev/mtdblock4` | `/proc/cmdline` |
+| flash | `m25p80`, erasesize `0x10000`, 16 MiB | `/proc/mtd` + boot log |
+| kernel | 4.4.176 (vendor) | boot log |
+
+Partition table, verbatim from the device's `/proc/mtd`:
+
+| mtd | start | size | end | label | ours |
+|---|---|---|---|---|---|
+| – | 0x000000 | 0x30000 | 0x030000 | Bootloader (mtd1) | read-only, never written |
+| – | 0x030000 | 0x10000 | 0x040000 | CFG (mtd2) | read-only; holds the ASCII `TENDA.*_mac=` keys |
+| **firmware** | 0x040000 | 0xF80000 | 0xFC0000 | KernelFS (mtd3) | **the partition we write** |
+| – | (0x400812, inside mtd3) | 0xBBF7EE | 0xFC0000 | RootFS (mtd4) | squashfs window, not a sibling |
+| – | 0xFC0000 | 0x10000 | 0xFD0000 | CFM (mtd5) | read-only, RF calibration + MACs |
+| – | 0xFD0000 | 0x10000 | 0xFE0000 | CFM_BACKUP (mtd6) | read-only |
+| – | 0xFE0000 | 0x10000 | 0xFF0000 | MISC2 (mtd7) | read-only |
+
+`mtd0 "ALL"` spans 0x0..0xFF0000, so the final erase block belongs to no
+partition. mtd4's start (0x400812) minus mtd3's base (0x40000) is 0x3c0812,
+which is exactly where the cr6c container's squashfs superblock sits — the two
+"overlapping" partitions are one region viewed twice.
+
+Per-unit MACs are ASCII inside the `CFG` text config (from a live dump; the
+real values are **elided** here because the console root password is derived
+from the LAN MAC, so a published MAC is a half-secret):
+
+```
+0x22d  TENDA.lan_mac=80:9F:XX:XX:XX:B0
+0x5a5  TENDA.wlan0_mac=80:9F:XX:XX:XX:C4   (2.4 GHz)
+0x5c7  TENDA.wlan1_mac=80:9F:XX:XX:XX:B4   (5 GHz)
+```
+
+`80:9F:E4` is Tenda's OUI; the last three octets are per-unit. The offsets and
+key names are the portable part — read the MACs from your own `CFG`.
+
+There is **no** `wan_mac` line — the vendor derives it. `board.d/02_network`
+uses WAN = LAN+1, which is our choice, not a vendor fact, and the comment
+there explains why LAN and WAN must differ on this SoC.
+
+---
+
+## The container format (this is the part that matters)
+
+The stock `KernelFS` is **not** a vendor invention. It is a standard Realtek
+`cvimg` image with the `cr6c` signature — the same host tool OpenWrt's realtek
+target already ships. Verified byte-exactly against three samples (the
+device's own mtd3 and two decrypted vendor upgrades), including its 16-bit
+checksum. Full field table in `notes/cr6c-container.md`.
+
+```
+0x00  "cr6c"          signature
+0x04  0x80d00000      start_addr (BE)   <- vendor kernel; ours is our loader's link addr
+0x08  0x00040000      burn_addr  (BE)   <- mtd3 offset, matches our DTS
+0x0c  payload_len + 2 (BE)
+0x10  payload (kernel blob)
+      2-byte cvimg checksum             <- ~sum16(payload)+1, big-endian
+      squashfs superblock, exactly at 16 + len
+```
+
+★ The vendor's squashfs superblock magic is mangled `hsqs` → `nice`. That is a
+**stock-kernel patch**, not a container requirement: our kernel uses normal
+squashfs and needs no such patch.
+
+★ `mtdsplit_cvimg.c` as shipped upstream computed the rootfs offset as
+`ALIGN(16 + len, 4)`. On this board the superblock sits at the *un-aligned*
+`16 + len` (0x3c0812 is not divisible by 4), and the parser's 4 KiB-step
+fallback scan can never see an offset like that. Whether our own images hit
+the aligned candidate depends on kernel size modulo 4, i.e. the split would
+work one build and silently fail the next. This repo patches the parser to try
+the exact offset first, then the aligned one, then scan
+(`files/target/linux/generic/files/drivers/mtd/mtdsplit/mtdsplit_cvimg.c`).
+
+---
+
+## Install paths — read this before touching a router
+
+**The webui's "Local Upgrade" cannot take our image.** `/bin/decry_firm`
+verifies an **RSASSA-PKCS1-v1_5 with SHA-512 signature over the entire AES
+payload** of the uploaded `TDE01` container, using a 4096-bit public key
+embedded in the binary (modulus at `.rodata 0x41cd00`, `e = 65537` at
+`.data 0x42f940`). Verified: `pow(sig, 65537, N)` yields the `00 01 FF FF…`
+DigestInfo prefix. There is no plaintext pass-through — every probe (header
+present, signature zeroed, truncated input) fails with `get signed_digest
+failed`. Without Tenda's private key, a webui-uploadable file is not
+producible. `/proc/km/km_upgrade_ignore_kernel_sig` is mode `0440` and is not a
+bypass.
+
+What actually installs OpenWrt here, in the order you should try it:
+
+1. **RAM boot (no flash write, always safe).** `*-initramfs-kernel.bin`, loaded
+   through the Realtek loader shell (`<RealTek>` prompt: `LOADADDR`, `XMOD`,
+   `IPCONFIG`). Serial cable required. Nothing is persisted; a power cycle
+   returns you to stock.
+2. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP. Writes flash, so
+   take the dumps in *Recovery* first.
+3. **Vendor `tendaupgrade` from a root shell.** The stock contract is
+   `tendaupgrade <fwtype> <1|0> /var/image` (called from `libcommonprod.so`),
+   where `/var/image` holds a file shaped like the output of `decry_firm` —
+   that is exactly what `*-tenda-plaintext.bin` is: the cr6c container behind
+   the 64-byte Tenda plaintext header (lengths + payload CRC32, byte-exact
+   against vendor samples). Whether `tendaupgrade` itself re-verifies anything
+   is the open question; the container it produces and the geometry it expects
+   are fully documented above.
+4. **Direct MTD write of `*-factory-cr6c.bin`** to `mtd3` from a root shell —
+   the fallback, and the most explicit.
+
+⚠ **Open question that changes the recommendation above:** `xmesh` and
+`libcommonprod.so` call `tendaupgrade` while containing **zero** references to
+`decry_firm`, and `libgo.so` exposes `formAgentLocalUpgrade` /
+`formIgnoreUpgrade`. If any of those channels reaches the flasher without the
+RSA verifier, a webui-reachable path exists after all. That investigation is in
+flight; this README will say so plainly when it lands. Until then, treat paths
+1–4 as the plan.
+
+## Recovery net (verify offline before you need it)
+
+* mtd1..mtd7 were dumped and are kept off-device. Re-flashing mtd1 restores the
+  bootloader entirely.
+* The stage-2 in mtd1 serves **`disaster_web`** (`printenv` in the loader shows
+  `disaster_web=1 ipaddr=192.168.1.1 netmask=255.255.255.0 serverip=192.168.1.99`),
+  i.e. a TFTP/HTTP recovery mode reachable without a serial console.
+* The vendor runs a **dual image**: `KernelFS1`/`KernelFS2` with
+  `env set image_boot 1|0 unlock`, so a boot failure can fall back to the other
+  slot. `image0_stats`/`image1_stats` track which. Do not write either slot
+  until the env semantics are confirmed on your own dump.
+
+## Build
+
+Local (Debian 11-era host) or container:
+
+```sh
+docker build -t owrt-rx2lpro .
+docker run --rm -v "$PWD":/build -w /build owrt-rx2lpro ./build.sh
+```
+
+`build.sh` pins `ggbruno/openwrt @ 8a0ccb9` (the only tree with an `rtl8197f`
+subtarget), overlays `files/`, pins both feeds to `openwrt-19.07` (master's
+ucode-based LuCI does not build against this base), applies `seed.config`,
+builds, and then **refuses to call the build a success until every produced
+container passes `tools/check-cr6c.py`**.
+
+```sh
+python3 tests/test_container.py            # tool selftest, no vendor data needed
+python3 tools/check-cr6c.py --stock --expect-start 0x80d00000 /path/to/mtd3_KernelFS.bin
+python3 tools/check-cr6c.py --tenda --expect-start 0x80d00000 /path/to/decrypted.bin
+```
+
+GitHub Actions (`.github/workflows/build.yml`) runs the selftest, then the full
+build inside the container, and uploads the images as artifacts.
+
+## Status
+
+Done: container format and its checksum cracked; vendor upgrade contract
+documented; RSA gate characterized and its verdict settled; partition map,
+RAM, console and MAC layout read from the device; `cr6c` device profile,
+`tenda-wrap`, the geometry fix in `mtdsplit_cvimg`, and a CI gate that
+self-tests against synthetic containers and real vendor images.
+
+Not done, and honestly so: **no image in this repo has ever been booted on
+hardware**. Unverified and deliberately left as `TODO(port-facts)` in the DTS:
+the 2.4/5 GHz chips and their driver pairing, whether this board has an
+external switch (RTL8367S-class) or runs on the SoC's built-in core, the LED
+and button GPIO tables, and the CFM calibration-block offsets. Those are the
+first things to settle before any flash write.
+
+## Do not
+
+* Do not write `/dev/mtd*` on a device you have not dumped.
+* Do not commit decrypted vendor firmware, device MACs, or the console
+  password derivation. This repo carries no vendor images.
+* Do not run the vendor flasher on an image `tools/check-cr6c.py` rejected.
