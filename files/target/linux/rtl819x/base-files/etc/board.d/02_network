@@ -1,0 +1,125 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
+
+board_config_update
+board=$(cat /tmp/sysinfo/board_name)
+
+# R4 audit: the call below used to be unconditional, which silently handed EVERY
+# board the DIR-842 R1 datapath. It is per-board now, because for rx2l-pro that
+# assumption is boot-defining rather than cosmetic: eth0.2/eth0.1 only carry
+# traffic if the RTL819x SoC VLAN table forwards the CPU NIC line (bit 8) to a
+# port that reaches the outside world, and rtl819x-eth.c hardcodes that table for
+# the reference topology (sw_add_vlan_fid(RTL865X_VID_LAN, 0x10F, ...) = "jacks
+# 0-3 + CPU8"). The RX2L Pro's jacks hang off an external RTL8367RB-class switch
+# whose CPU trunk is not even identified yet, so naming a VLAN device that
+# nothing reaches is exactly how a box boots "alive but unreachable". Each layout
+# now sits next to the board it was measured on.
+case $board in
+  rx2l-pro|*rx2l-pro)
+    # Untagged eth0 is the only device defensible offline: an untagged frame on
+    # the CPU NIC line defaults to the LAN VID (rtl819x-eth.c:1381-1395), so it
+    # is the shape most likely to survive an unconfigured external switch. WAN
+    # stays on the VLAN sub-device and is EXPECTED DEAD on first boot -- a jack
+    # cannot become a WAN until the external switch is programmed. Better a
+    # visibly dead WAN (LAN + 2.4 GHz AP come up, so the box is reachable) than a
+    # silently bridged lan+wan, which loops.
+    ucidef_set_interfaces_lan_wan "eth0" "eth0.1"
+    ;;
+  *)
+    # R3: this used to say "eth0" "eth1". There IS no eth1 on the DIR-842 R1 — the
+    # SoC has a single CPU-port netdev and Linux splits it into eth0.2 (LAN, VID2)
+    # / eth0.1 (WAN, VID1). The phantom eth1 had a real consequence: config_generate
+    # emitted a wan_eth1_dev device section and hung the per-unit WAN MAC off a
+    # device that never appears, so eth0.1 silently inherited eth0's (LAN) MAC. The
+    # ASIC programs its WAN netif from eth0.1's live MAC and rewrites HW-routed
+    # egress src to it, so LAN==WAN breaks the LAN=WAN+1 invariant and blackholes
+    # CPU<->WAN traffic while HW-routed frames still work. Name real devices.
+    ucidef_set_interfaces_lan_wan "eth0.2" "eth0.1"
+    ;;
+esac
+
+lan_mac=""
+wan_mac=""
+
+case $board in
+  dir-815-d1)
+    offset=$(strings -t x "$(find_mtd_part boot)" | grep llconfig | head -n 1 | awk '{ print "0x"$1 }')
+    offset=$((offset+53))
+    wan_mac=$(mtd_get_mac_binary boot $offset)
+    lan_mac=$(macaddr_add "$wan_mac" 1)
+    ;;
+  re708-v1)
+    wan_mac=$(mtd_get_mac_binary boot 131079)
+    lan_mac=$(macaddr_add "$wan_mac" 1)
+    ;;
+  gwr1200ac-v1)
+    # DIR-842 R1: the mtd1 "MAC" partition carries TWO overlaid schemas.
+    #   0x00: D-Link per-unit base MAC as a 17-byte ASCII string ("e0:1c:fc:51:c9:ee")
+    #         = the WAN MAC; LAN = WAN + 1. This is what stock uses (libhwdata.so).
+    #   0x13: the Realtek vendor DEFAULT binary macAddr[] block (00:e0:4c:81:96:c1..c8),
+    #         identical on every unit.
+    # Reading offset 19 (=0x13) gives every board the same MAC, so read the ASCII
+    # field and fall back only if it is missing/garbage.
+    #
+    # ★ THIS IS THE SINGLE SOURCE OF TRUTH FOR THE MAC — do not add a second one.
+    # An earlier attempt ALSO pinned network.lan/wan.macaddr from uci-defaults. Two
+    # independent sources is what made the MAC non-deterministic: some boots came up
+    # on the per-unit MAC and identical later boots on the fallback, depending on
+    # which writer won. board.d is the right place because it runs before netifd
+    # configures the interfaces, and this read is proven to work here (a boot with
+    # this code brought eth0.2 up as e0:1c:fc:51:c9:ef).
+    # The driver side follows automatically: gw_netif_mac() programs the ASIC netif
+    # from the interface's LIVE MAC, so Linux and the ASIC cannot disagree.
+    wan_mac=$(dd if=/dev/mtd1 bs=1 count=17 2>/dev/null)
+    case "$wan_mac" in
+      [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+      *) wan_mac=$(mtd_get_mac_binary MAC 19) ;;
+    esac
+    lan_mac=$(macaddr_add "$wan_mac" 1)
+    ;;
+  rx2l-pro|*rx2l-pro)
+    # Tenda keeps the per-unit MACs as ASCII key=value lines inside the mtd2
+    # "CFG" text config, not in a binary MAC block. Offsets verified on a live
+    # dump of this unit (the values themselves are elided: the console root
+    # password is derived from the LAN MAC, so never bake one into a repo):
+    #   0x22d  TENDA.lan_mac=    -> base/LAN
+    #   0x5a5  TENDA.wlan0_mac=  -> 2.4 GHz
+    #   0x5c7  TENDA.wlan1_mac=  -> 5 GHz
+    # ★ There is no wan_mac line -- the vendor derives it, and we do not know
+    # how. WAN = LAN+1 is OUR choice, deliberately one off LAN and clear of
+    # B4/C4 used by the radios. It must differ from LAN: the RTL819x ASIC
+    # programs its WAN netif from the WAN netdev's live MAC and rewrites
+    # HW-routed egress src to it, so LAN==WAN blackholes CPU<->WAN while
+    # HW-routed frames still work (see the gwr1200ac-v1 comment above).
+    # Single source of truth: board.d only, never also in uci-defaults.
+    lan_mac=$(grep -ao 'TENDA\.lan_mac=[0-9A-Fa-f:]\{17\}' "$(find_mtd_part CFG)" |
+              head -n1 | cut -d= -f2 | tr 'A-F' 'a-f')
+    [ -z "$lan_mac" ] || wan_mac=$(macaddr_add "$lan_mac" 1)
+    ;;
+  gwr1200ac-v2)
+    wan_mac=$(mtd_get_mac_binary boot 131091)
+    lan_mac=$(macaddr_add "$wan_mac" 1)
+    ;;
+  actionrg1200-v1 | \
+  actionrf1200-v1)
+    wan_mac=$(mtd_get_mac_ascii boot HW_NIC0_ADDR)
+    lan_mac=$(macaddr_add "$wan_mac" 1)
+    ;;
+  gwr-300n-v1)
+    wan_mac=$(mtd_get_mac_binary boot 24595)
+    lan_mac=$(mtd_get_mac_binary boot 24583)
+    ;;
+  re172-v1)
+    wan_mac=$(mtd_get_mac_binary boot 24583)
+    lan_mac=$(mtd_get_mac_binary boot 24595)
+esac
+
+[ -n "$lan_mac" ] && ucidef_set_interface_macaddr "lan" $lan_mac
+[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" $wan_mac
+
+board_config_flush
+
+exit 0

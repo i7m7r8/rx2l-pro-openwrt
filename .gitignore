@@ -16,5 +16,9 @@
 
 .DS_Store
 *.o
-*.d
+# NOT '*.d': that pattern also matches DIRECTORIES ending in .d, so it silently
+# swallowed etc/board.d/, etc/init.d/ and etc/sysctl.d/ -- every board.d script
+# in this tree went uncommitted for the whole 4.14 and 6.18 line. Nothing builds
+# in this repo (builds run in the CI container), so compiler .d files do not
+# need ignoring; the board.d/init.d/sysctl.d content very much needs tracking.
 .tmp/
