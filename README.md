@@ -147,7 +147,9 @@ carries only the `check_fw_*` helpers) contain **no** RSA or
 validating — not for the webui, but so a container that *would* have been
 accepted can be told apart from one that is malformed before it reaches flash.
 
-Install paths, in the order to try them:
+Install paths, in the order to try them. The step-by-step version, including the
+pre-flight dumps and the recovery ladder, is
+[`notes/install-runbook.md`](notes/install-runbook.md):
 
 1. **RAM boot (no flash write, always safe).** `*-initramfs-kernel.bin`, loaded
    through the Realtek loader shell (`<RealTek>` prompt: `LOADADDR`, `XMOD`,
