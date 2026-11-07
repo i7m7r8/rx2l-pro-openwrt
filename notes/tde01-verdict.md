@@ -19,20 +19,20 @@ _No brief was recorded for this investigation._
 
 - **Confidence:** Seen it (observed)
 - **Evidence:**
-  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into /root/rx2lpro/work/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=/root/rx2lpro/work/extract51 (output folder))
+  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into <local workdir>/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=<local workdir>/extract51 (output folder))
 
 ### The AES key is product-static, not per-image: the RSA plaintext holds only a SHA-512 DigestInfo and no key material, while decry_firm's openssl_aes_password unwraps an AES password from a block embedded in its own .data (0x42f740) and drives EVP_BytesToKey(MD5) AES-CBC over the payload. Decryption therefore works for every image of this generation while signing cannot be reproduced.
 
 - **Confidence:** Worked it out (derived)
 - **Evidence:**
   - `ev_c3e5916de7c972910c59c834f8e58375ee74c38638e84432aeebd57cd401b8ba` — US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.bin: 0 region(s) (none); 0.0% of 12107892 bytes recognised; 1 unexplained high-entropy span(s).
-  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into /root/rx2lpro/work/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=/root/rx2lpro/work/extract51 (output folder))
+  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into <local workdir>/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=<local workdir>/extract51 (output folder))
 
 ### Installation must bypass the signature stage instead of satisfying it: lib/libcommonprod.so shows the working contract is 'tendaupgrade <fwtype> <1|0> /var/image' and bin/tendaupgrade only touches /dev/mtdN plus KernelFS1/KernelFS2 and env image_boot, so a self-built cr6c KernelFS staged in RAM and written by the vendor's own /bin/tendaupgrade is the viable route; /proc/km/km_upgrade_ignore_kernel_sig exists on the device but is mode 0440 and reads 0, so it is not a usable bypass.
 
 - **Confidence:** Seen it (observed)
 - **Evidence:**
-  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into /root/rx2lpro/work/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=/root/rx2lpro/work/extract51 (output folder))
+  - `ev_f1502249719ece2d0a02182309257f638dd8c2fe9f31320434c765e8f41c71de` — Wrote 5 file(s), 49697788 bytes, from US_RX2LProV1.0re_V16.03.51.17_multi_TDE01.dec.bin into <local workdir>/extract51 (3 carved, 1 decompressed, 1 payload); 2 level(s) deep. (path=<local workdir>/extract51 (output folder))
 
 ## Open questions
 
