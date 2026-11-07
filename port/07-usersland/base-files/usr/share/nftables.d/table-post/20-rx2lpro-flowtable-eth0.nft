@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# RX2L Pro: pull eth0 into the nftables software flowtable.
+#
+# Written to the overlay by /etc/init.d/rtl819x-hwnat, and REMOVED by it when
+# firewall.@defaults[0].flow_offloading_hw=1. Do not delete or edit it by
+# hand: with hardware NAT on and this file present, fw4's `flags offload`
+# declaration collides with a flag-less ft entry, nft rejects the transaction
+# and fw4 goes deny-all -- the box is then unreachable by its own firewall,
+# which looks exactly like a dead datapath.
+#
+# Why eth0 and not br-lan: fw4 already adds zone devices (br-lan, eth0.8/
+# eth0.2) to `ft`, so an offloaded flow cannot start until the 802.1Q layer.
+# On eth0 the frame enters a known flow directly from rtl819x_eth.c. base A
+# measured 766/703 -> 850-876 Mbit/s (LAN->WAN / WAN->LAN) from this alone.
+#
+# Valid in all three switching models 02_network can pick (dsa / swconfig /
+# none), because in every one of them eth0 is the SoC CPU netdev the ASIC
+# actually moves the frame on.
+flowtable ft {
+	hook ingress priority 0;
+	devices = { "eth0" };
+}

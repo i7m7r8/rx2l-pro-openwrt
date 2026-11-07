@@ -93,64 +93,35 @@ the exact offset first, then the aligned one, then scan
 
 ## Install paths — read this before touching a router
 
-**The webui's "Local Upgrade" will not take our image.** An earlier revision of
-this file said the opposite ("the signature verdict is discarded, so a plaintext
-image flashes"); that reading stopped one function too early, and it is worth
-showing why, because it decides which install path you are allowed to plan on.
+**The webui's "Local Upgrade" will take our image — but only after one
+root-only precondition.** Getting there took three passes, and the record is
+worth keeping because each wrong answer looked right:
 
-`/bin/decry_firm` verifies an **RSASSA-PKCS1-v1_5 with SHA-512 signature over the
-entire AES payload** of a `TDE01` container with a 4096-bit public key embedded in
-the binary (modulus at `.rodata 0x41cd00`, `e = 65537` at `.data 0x42f940`), and no
-self-built file can pass it. It is true that `upgrade()` (`libgo.so@0x441ec`)
-never reads `decry_firm`'s return value — but it does not have to: `decry_firm`
-is called as `decry_firm /var/image /tmp/UPGRADE_DECRY_FAIL_FLAG`, and it
-*records its own verdict* in that second argument. It unlinks a stale flag,
-decrypts in place, and on failure **creates the flag** (0 bytes, rc 255) while
-leaving the image byte-identical.
+1. "the signature verdict is discarded, so a plaintext image flashes" — wrong:
+   `decry_firm` records its verdict in `/tmp/UPGRADE_DECRY_FAIL_FLAG` and
+   `check_fw()` tests that file before anything else;
+2. "so the webui can never take our image" — also wrong: the flag is *created*
+   with `creat()` and *tested* with `access()`, and the two disagree about a
+   **dangling symlink** — `access()` says ENOENT (proceed), `creat()` fails
+   ENOENT (no flag written);
+3. the signature itself is genuinely unforgeable — two RSASSA-PKCS1-v1_5
+   SHA-512 checks, both real, passphrase recoverable but signature not
+   (`port/08-veto-paths/DECRY-FIRM-FORMAT.md`) — but the signature is not what
+   blocks us. The *recording* of its failure is, and that is a symlink.
 
-`check_fw()`, the pre-flash gate in `lib/libcommonprod.so` at `0x2a518`, tests
-that flag **before it does anything else**, before type, size or CRC:
-
-```
-0002a550  move   $a1, $zero          ; access(path, F_OK)
-0002a558  addiu  $a0, $v0, 0x61a8    ; ['/tmp/UPGRADE_DECRY_FAIL_FLAG']
-0002a55c  lw     $v0, -0x7e30($gp)   ; {access}
-0002a564  jalr   $t9
-0002a570  bnez   $v0, 0x2a5b0        ; flag ABSENT -> the real checks
-0002a578  addiu  $v0, $zero, -1      ; flag PRESENT -> return -1
-0002a590  ... printf('...-----image decrypted failed---\n')
-```
-
-That -1 travels back through `tpi_upload` (`libgo.so@0x42e38`) to
-`systool_upgradefile_handle` and into `upgrade()`, which at `0x44708`
-(`bnez $v0, 0x44778`) **skips the only flash trigger** in the binary
-(`systool_call_writeImage_delay_11ac`), deletes `/var/image` and reboots. Nothing
-is written to flash, and the browser gets
-`/corss-domain-res.html?errCode=1`.
-
-So: we cannot build a file that `decry_firm` accepts (the TDE01 key is not
-recoverable), and the moment we cannot, `check_fw` refuses. The webui path is
-closed, not because RSA cannot be forged, but because **the failure is
-remembered in a file that the next gate checks first**. The full chain, with the
-qemu execution proof for `decry_firm` and every call-site address, is
-[`port/08-veto-paths/REPORT.md`](port/08-veto-paths/REPORT.md); the header/format
-fields the vendor gate would have wanted are still documented in
-[`notes/webui-upgrade-contract.md`](notes/webui-upgrade-contract.md) because they
-define the container geometry.
-
-The container format and both verifications are documented instruction by
-instruction in [`port/08-veto-paths/DECRY-FIRM-FORMAT.md`](port/08-veto-paths/DECRY-FIRM-FORMAT.md);
-the short version is that the AES layer is public but the ciphertext carries an
-outer RSA-4096/SHA-512 signature and the payload carries an inner one.
+So: plant `ln -s /nonexistent/x /tmp/UPGRADE_DECRY_FAIL_FLAG` from a root shell,
+then upload `*-tenda-plaintext.bin` through Local Upgrade. `decry_firm` fails,
+writes no flag, `check_fw` runs its real checks (type 2 at `+0x20`, product id
+`0x00031053` at `+0x24`, payload CRC32 at `+0x18`, ≤ 15.5 MiB — all fields
+`tools/tenda-wrap` writes and CI verifies) and returns 0, and the webui calls
+the vendor flasher itself. `/tmp` is tmpfs, so the symlink is re-planted after
+each reboot.
 
 `check_fw` → `check_fw_type` / `check_fw_valid` / `check_fw_crc` /
-`check_mtd_size` (`check_fw` itself in `lib/libcommonprod.so`; `lib/libcommon.so`
-carries only the `check_fw_*` helpers) contain **no** RSA or
-`EVP_DigestVerify` call: they check header shape, sizes, `fw_type`,
-`fw.product.id` and the payload CRC32. Those are exactly the fields
-`tools/check-webui-bin.py` validates offline, and they are still worth
-validating — not for the webui, but so a container that *would* have been
-accepted can be told apart from one that is malformed before it reaches flash.
+`check_mtd_size` (`check_fw` in `lib/libcommonprod.so`; `lib/libcommon.so`
+carries only the helpers) contain **no** RSA call: header shape, sizes,
+`fw_type`, `fw.product.id`, payload CRC32. Those are what `tools/check-webui-bin.py`
+validates offline, and the build refuses to emit a container that fails them.
 
 Install paths, in the order to try them. The step-by-step version, including the
 pre-flight dumps and the recovery ladder, is
@@ -160,21 +131,26 @@ pre-flight dumps and the recovery ladder, is
    through the Realtek loader shell (`<RealTek>` prompt: `LOADADDR`, `XMOD`,
    `IPCONFIG`) — see *First-boot risk checklist* below. Serial cable required.
    Nothing is persisted; a power cycle returns you to stock.
-2. **Vendor `tendaupgrade` from a root shell.** One `KernelFS` write done by the
-   vendor's own flasher: `tendaupgrade <fwtype> <1|0> /var/image`. This is the
-   first path that actually installs, and it is not affected by anything above:
+2. **Webui "Local Upgrade" with `*-tenda-plaintext.bin`.** Plant
+   `ln -s /nonexistent-dir/x /tmp/UPGRADE_DECRY_FAIL_FLAG` from a root shell
+   first (see the correction above; re-plant after each reboot). Then the vendor
+   UI itself drives the flash: one `KernelFS` write, reboot, fresh squashfs.
+   This is the pleasant path when you are already sitting at the web page.
+3. **Vendor `tendaupgrade` from a root shell.** The same write, invoked
+   directly: `tendaupgrade <fwtype> <1|0> /var/image`. It needs no precondition
+   and no symlink —
    `tendaupgrade` contains neither the `decry_firm` string nor a `check_fw`
    import (verified on the extracted binary), so it never decrypts and never
    consults the flag. Fresh squashfs = pristine default config, which is the
    factory-reset behaviour you want; the `CFG` partition is never touched
    because our port reads the MAC and RF calibration out of it.
-3. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP — the recovery-grade
+4. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP — the recovery-grade
    path, and the one that works when nothing on flash boots at all.
-4. **Direct MTD write** to `mtd3` from a root shell — the explicit fallback when
+5. **Direct MTD write** to `mtd3` from a root shell — the explicit fallback when
    the vendor flasher itself is what is misbehaving.
 
-⚠ The webui will reject the plaintext artifact with `errCode=1` and will not
-touch flash; that is expected behaviour, not a build failure. What still has to
+⚠ Without the symlink in place the webui rejects the plaintext artifact with
+`errCode=1` and touches no flash; that is the veto working, not a build failure. What still has to
 be true before path 2–4 runs on hardware is narrower than it used to be: the
 four `check_fw_*` comparisons are read and encoded in `tools/check-webui-bin.py`
 (done), so an image can be proven *well-formed* offline, and the only open

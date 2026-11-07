@@ -52,6 +52,27 @@ addresses, base `0x400000`):
   rather than shipping a bad one). Never flash a file that did not come out of
   a green run.
 
+## 2b. The webui route (what the vendor UI can actually do for us)
+
+The webui is reachable after all, through the one hole in the veto: `decry_firm`
+creates the failure flag with `creat()` while `check_fw` tests it with
+`access()`, and a **dangling symlink** makes them disagree — `access()` reports
+ENOENT, `creat()` fails, no flag is written, and `check_fw` proceeds to the
+field checks our container already satisfies. Measured under qemu on the stock
+binary: normal path -> flag created -> refuse; symlink path -> no flag -> proceed
+(`notes/webui-upgrade-contract.md`, "The veto is bypassable").
+
+Needs a root shell for one command, and re-planting after each reboot because
+`/tmp` is tmpfs:
+
+```
+ln -sf /nonexistent-dir/x /tmp/UPGRADE_DECRY_FAIL_FLAG
+```
+
+Then upload `*-tenda-plaintext.bin` in the webui (Local Upgrade). Expect the
+page to report success, one `KernelFS` write, and a reboot. If the upload is
+rejected with `errCode=1`, the symlink was not in place when `check_fw` ran.
+
 ## 3. Pre-flight, once, before any flash
 
 Keep the device's own flash content off-device first. That is the only thing

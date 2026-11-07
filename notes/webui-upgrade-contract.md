@@ -3,14 +3,24 @@
 Resolved 2026-11-07, corrected the same day. This replaces the open question that
 used to sit at the end of the "Install paths" section of the README.
 
-**Bottom line: the webui cannot install a hand-built image.** An earlier revision
-of this note concluded the opposite — that the RSA verdict is discarded, so a
-plaintext container would flash. That was one function short of the truth, and
-the record is kept because the wrong version read perfectly plausible: it is
-true that `upgrade()` ignores `decry_firm`'s return value, but `decry_firm`
-*records its verdict* in `/tmp/UPGRADE_DECRY_FAIL_FLAG`, and `check_fw()` tests
-that file before it checks anything else. The gate is the flag file, not the
-discarded rc.
+**Bottom line (second correction, 2026-11-07 evening): the webui CAN install a
+hand-built image, if the veto path is made uncreatable first.** Two earlier
+readings of this file were wrong in opposite directions, so both corrections are
+kept on the record:
+
+1. first: "the RSA verdict is discarded, so plaintext installs" — wrong, because
+   `decry_firm` records its verdict in a flag file that `check_fw` tests first;
+2. then: "therefore the webui can never take our image" — also wrong, and this
+   is the subtle one. The flag is created with `creat()`, while `check_fw` tests
+   it with `access()`, and the two disagree about a dangling symlink:
+   `access()` reports ENOENT, `creat()` fails with ENOENT, so **no flag is ever
+   created** and `check_fw` proceeds to its field checks, where a well-formed
+   our-shaped container passes and the vendor flasher runs.
+
+The signature is still unforgeable — that half of the analysis stands and is
+documented in `port/08-veto-paths/DECRY-FIRM-FORMAT.md`. What is bypassable is
+not the signature but **the recording of its failure**. See "The veto is
+bypassable" below for the exact preconditions and the qemu proof.
 
 Everything below is kept because it still describes the container geometry and
 the field-level checks; the verdict sections have been rewritten against the
@@ -96,6 +106,48 @@ needs the private key.
 
 Format, addresses, the qemu matrix and the crack attempts:
 [`../port/08-veto-paths/DECRY-FIRM-FORMAT.md`](../port/08-veto-paths/DECRY-FIRM-FORMAT.md).
+
+## The veto is bypassable: `access()` and `creat()` disagree on a dangling link
+
+The gate is not "the image fails to verify", it is "a 0-byte file exists at
+`/tmp/UPGRADE_DECRY_FAIL_FLAG`". Those are different properties, and only the
+second one is tested:
+
+```
+decry_firm (argv[2] = the flag path):
+    if (access(argv[2], F_OK) == 0) unlink(argv[2]);   /* clear stale flag */
+    rc = decrypt_firmware(argv[1]);
+    if (rc) { ... fd = creat(argv[2], 0777); if (fd >= 0) close(fd); }
+check_fw:
+    if (access("/tmp/UPGRADE_DECRY_FAIL_FLAG", F_OK) == 0) return -1;  /* refuse */
+    ... check_fw_type / check_mtd_size / check_fw_valid / check_fw_crc ... return 0
+```
+
+Make that path a **dangling symlink** and both calls disagree with the file they
+are supposed to describe: `access()` follows the link and reports ENOENT, so
+`check_fw` sees "no failure"; `creat()` also follows it and fails ENOENT, so no
+flag is written. The image is left untouched either way. Measured under qemu on
+the stock binary, same plaintext input, only `argv[2]` differing:
+
+| argv[2] | decry_firm rc | flag afterwards | `access()` on it |
+|---|---|---|---|
+| a normal path | 255 | **created**, 0 bytes | present -> `check_fw` refuses |
+| `ln -s /nonexistent-dir/f <path>` | 255 | **absent** | ENOENT -> `check_fw` proceeds |
+
+and the input file is byte-identical to the plaintext it was fed, so what
+`check_fw` then inspects is our container.
+
+Preconditions, stated plainly: it needs a root shell to plant the symlink
+(`/tmp` is tmpfs, so it also has to be re-planted after a reboot), and the
+container still has to satisfy the field checks — `fw_type` 2 (byte `+0x20`),
+`+0x24 == 0x00031053`, payload CRC32 at `+0x18`, total ≤ 15.5 MiB. Those are
+exactly the fields `tools/tenda-wrap` writes and `tools/check-webui-bin.py`
+verifies, and the build refuses to emit a container that fails them.
+
+If you already have root, root shell + `tendaupgrade 2 1 <file>` is simpler and
+needs no precondition (`notes/install-runbook.md`). The symlink route exists
+because it lets the *vendor webui* drive the flash — one KernelFS write, reboot,
+fresh squashfs — with the same bytes.
 
 ## What `check_fw` requires, field by field
 

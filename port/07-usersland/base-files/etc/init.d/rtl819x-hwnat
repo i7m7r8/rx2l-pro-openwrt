@@ -1,0 +1,86 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# RX2L Pro, part 1 of 2: keep the nftables flowtable snippet in step with
+# LuCI's "Flow offloading: Hardware" tickbox
+# (uci firewall.@defaults[0].flow_offloading_hw).
+#
+# Ported from base A /etc/init.d/rtl819x-hwnat, with the board test moved into
+# lib/realtek.sh and the snippet renamed for this device.
+#
+# hw=0 (software offload, our default): snippet PRESENT -- fw4 pulls eth0 into
+#     the ft. base A measured 766/703 -> 850-876 Mbit/s LAN<->WAN by adding
+#     exactly this snippet, because fw4 only puts zone devices (br-lan, eth0.8)
+#     into `ft`, so an offloaded flow otherwise cannot start until the 802.1Q
+#     layer. On eth0 the frame enters a known flow straight from the driver.
+# hw=1 (hardware NAT): snippet REMOVED -- with `flags offload` declared, an
+#     ft entry WITHOUT the flag makes nft fail the transaction ("Not
+#     supported") and fw4 falls back to deny-all, i.e. the box becomes
+#     unreachable through its own firewall. That is the whole reason this is a
+#     service and not a static file.
+#
+# START=17 is load-bearing: it runs BEFORE firewall (19), so fw4 sees the
+# correct snippet set when it builds the ruleset at boot.
+
+START=17
+USE_PROCD=1
+
+. /lib/realtek.sh
+
+SNIPPET="/usr/share/nftables.d/table-post/20-rx2lpro-flowtable-eth0.nft"
+ROM_SNIPPET="/rom$SNIPPET"
+
+log() { logger -t rtl819x-hwnat "$@"; }
+
+snippet_ensure() {
+	local want="$1" changed=0
+
+	mkdir -p "$(dirname "$SNIPPET")"
+	if [ "$want" = "1" ]; then
+		if [ ! -f "$SNIPPET" ]; then
+			# in the image the file lives in /rom (squashfs)
+			if [ -f "$ROM_SNIPPET" ]; then
+				cp "$ROM_SNIPPET" "$SNIPPET"
+			else
+				cat > "$SNIPPET" <<-'EOF'
+				flowtable ft {
+					hook ingress priority 0;
+					devices = { "eth0" };
+				}
+				EOF
+			fi
+			changed=1
+		fi
+	else
+		if [ -f "$SNIPPET" ]; then
+			rm -f "$SNIPPET"
+			changed=1
+		fi
+	fi
+	return $changed
+}
+
+apply() {
+	local hw=0 snip changed
+
+	rx2lpro_is_board || return 0
+	[ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" = "1" ] && hw=1
+	if [ "$hw" = "1" ]; then snip=0; else snip=1; fi
+
+	# ★ snippet_ensure returns 1 on CHANGED, not on failure. base A tripped
+	# over this; take the code explicitly rather than in an `if`.
+	snippet_ensure "$snip"; changed=$?
+	if [ "$changed" = "1" ]; then
+		# At boot this can legitimately fail (fw4 not started yet) -- S19
+		# will build the ruleset with the right snippet set anyway.
+		/etc/init.d/firewall reload >/dev/null 2>&1
+		log "eth0 snippet: $([ "$snip" = 1 ] && echo present || echo removed) (hw=$hw)"
+	fi
+}
+
+start_service() { apply; }
+reload_service() { apply; }
+
+service_triggers() {
+	procd_add_reload_trigger firewall
+}

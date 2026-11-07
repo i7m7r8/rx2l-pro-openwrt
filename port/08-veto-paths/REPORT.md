@@ -3,7 +3,7 @@
 Question answered: *after `check_fw()` says yes, does anything else in the stock
 system veto, roll back, or re-verify the upgrade — before or after reboot?*
 
-Status: Q1 answered and closed. The container format and both verifications are
+Status: Q1 answered; verdict corrected once more (§1.6). The container format and both verifications are
 now documented in `DECRY-FIRM-FORMAT.md` (same directory): the webui path is
 closed twice over — `decry_firm` cannot be made to succeed on hand-built content
 (two RSA-4096/SHA-512 checks, both real), and even if it could not, `check_fw`
@@ -13,18 +13,27 @@ would refuse on the flag it leaves behind.
 
 ## VERDICT (provisional, driven by Q1)
 
-**NO — the vendor "Local Upgrade" page cannot flash a hand-built OpenWrt image.**
+**The vendor "Local Upgrade" page CAN flash a hand-built OpenWrt image — not by
+forging the signature, but by stopping the failure from being recorded.**
 
-`upgrade()` (`libgo.so@0x441ec`) runs `/bin/decry_firm /var/image
-/tmp/UPGRADE_DECRY_FAIL_FLAG` **unconditionally, before** `check_fw()`, and
-`decry_firm` creates that flag file **by itself** whenever its
-decrypt/verify step returns non-zero (PROVEN, see 1.3). A plaintext (ours, or
-an already-decrypted vendor) image always returns 255 → flag is created →
-`check_fw()`'s very first test `access(flag,F_OK)` returns -1 → `tpi_upload()`
-runs `rm /var/image` and the browser is redirected with `errCode=1`.
-Reversing this requires producing a container that `decry_firm` accepts, i.e.
-the RSA-4096/SHA-512-signed TDE01 wrapper (`notes/tde01-verdict.md`:
-unbreakable, public key embedded in `decry_firm .rodata@0x41cd00`, e=65537).
+The chain: `upgrade()` runs `decry_firm /var/image
+/tmp/UPGRADE_DECRY_FAIL_FLAG`; `decry_firm` fails on our plaintext input and
+records that by `creat()`ing the flag; `check_fw()`'s first instruction is
+`access(flag, F_OK)` and returns -1 if it exists. So the page is gated by a
+**file**, not by the signature verdict directly — and `access()` and `creat()`
+disagree about a dangling symlink: `access()` follows it, sees ENOENT, and lets
+`check_fw` continue; `creat()` follows it, fails ENOENT, and writes nothing.
+With `/tmp/UPGRADE_DECRY_FAIL_FLAG` pointing at a nonexistent directory, a
+plaintext container therefore passes `check_fw`'s real field checks and the
+webui calls the vendor flasher itself. Proven under qemu in §1.6.
+
+Preconditions: root to plant the symlink (re-planted after each reboot, /tmp is
+tmpfs), and a container that satisfies type 2 / product id / CRC32 / ≤15.5 MiB.
+With root already in hand, `tendaupgrade 2 1 <file>` is simpler — this route
+matters because it lets the *webui* drive the flash.
+
+The signature itself remains unforgeable: two RSASSA-PKCS1-v1_5/SHA-512 checks,
+both real (`DECRY-FIRM-FORMAT.md`). What is defeatable is the *recording*.
 
 The veto is NOT "the caller checks rc and writes the flag" — the callers ignore
 rc; the flag is written by `decry_firm` itself, so no caller-side patch helps.
@@ -160,3 +169,18 @@ flash trigger, at `0x4473c`/`0x4475c`) and falls through to
 `rm -rf /var/image` and `doSystemCmd("sleep 5 && reboot &")` at `0x4481c`.
 Nothing is ever written to flash. (PROVEN by disassembly; the on-device
 log/syslib side is UNTESTED.)
+
+### 1.6 The veto is bypassable: dangling symlink at the flag path
+
+`decry_firm` and `check_fw` are two different processes, so they can disagree
+about the same path. Measured on the stock binary under qemu, identical input
+(a genuine RX2L Pro plaintext image), only `argv[2]` differing:
+
+| `argv[2]` | rc | flag after | `access()` sees |
+|---|---|---|---|
+| `normalflag` | 255 | created (0 B) | present -> `check_fw` returns -1 |
+| `ln -s /nonexistent-dir/f symflag` | 255 | **absent** | ENOENT -> `check_fw` proceeds |
+
+Reproduce with `qemu/flag-symlink-test.sh`. The input is byte-identical after
+the call, so `check_fw` inspects exactly the container we intended to flash.
+

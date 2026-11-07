@@ -1,0 +1,224 @@
+#!/bin/sh
+# Tenda RX2L Pro (RTL8197F) first-boot network layout.
+#
+# STAGED FOR THE 6.18 REBASE (port/07-usersland). Supersedes
+# files/target/linux/realtek/base-files/etc/board.d/02_network.
+#
+# ---------------------------------------------------------------------------
+# 1. WHAT CHANGED VS THE 4.14 FILE, AND WHY
+# ---------------------------------------------------------------------------
+# * Base target moves: `target/linux/realtek` (ggbruno, kernel 4.14) ->
+#   `target/linux/rtl819x` (base A, Elengal/openwrt-rx23302, kernel 6.18).
+#   Reference: /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/Makefile
+#   (ARCH:=mipsel, BOARD:=rtl819x, SUBTARGETS:=rtl8197f, KERNEL_PATCHVER:=6.18).
+# * Board naming: the 4.14 base resolved names like `rx2l-pro` through
+#   `realtek_board_detect()` matching `/proc/cpuinfo`'s `machine` string
+#   (our old lib/realtek.sh). Both 6.x reference trees instead compare
+#   `board_name` against `vendor,model` taken from the flattened devicetree:
+#     /tmp/rebase-base/target/linux/realtek/base-files/etc/board.d/02_network:21
+#     /tmp/rebase/openwrt-rx23302/.../base-files/etc/uci-defaults/06_switch_vlan_ids:16
+#   Neither tree ships a `*_board_detect()` any more. So the DT `compatible`
+#   first entry IS the board name now, and a wrong/missing compatible degrades
+#   to `generic` -> package/base-files' own `etc/board.d/99-default_network`
+#   configures `eth0` as LAN (that fallback exists and is patched in
+#   /tmp/rebase/iptime-a2004mu-openwrt/patches/openwrt/0001-*.patch:1-25).
+#   That is strictly safer than the 4.14 failure mode ("configure nothing"),
+#   but it means the DTS and this file must agree. See lib/realtek.sh: this
+#   file tolerates BOTH `tenda,rx2l-pro` and the legacy `rx2l-pro`, so the
+#   rename cannot silently orphan the board.
+# * Everything DIR-842 R1 (`gwr1200ac-v1`) is GONE: that board does not exist
+#   in the rtl819x target. See MANIFEST.md for the drop list.
+
+. /lib/functions.sh
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
+. /lib/realtek.sh
+
+board_config_update
+
+# ---------------------------------------------------------------------------
+# 2. TOPOLOGY: measured, and which switching model won
+# ---------------------------------------------------------------------------
+# Jack-to-switch-port map, from THIS unit's stock userspace
+# (/tmp/rx_dump/rootfs/x/etc_ro/eth_to_port_config.txt + eth_name_conf.txt):
+#
+#   eth_name_conf.txt   lan_1:br0  p_lan_1:eth0  p_lan_2:eth2  p_lan_3:eth3
+#                       wan_1:eth1
+#   eth_to_port_config.txt          eth0:4        eth2:3        eth3:2
+#                                   eth1:1        vlan1:1
+#
+#   => RTL8367-family external switch, ports 1..4 wired to the four jacks:
+#        port 1 = WAN (the vendor's own `wan_1`/`p_wan_1` = eth1 = port 1)
+#        port 4 = LAN1, port 3 = LAN2, port 2 = LAN3
+#        port 0 and 5 unused; CPU/trunk = port 6 (untagged mask 0x40, and
+#        toby's sibling Tenda RTL8197F boards encode `port@6 { label="cpu" }`
+#        + realtek,tx-port-mask=<0x40> -- FACTS.md §5).
+#      Three LAN jacks + one WAN jack, not four LAN. The old FACTS note
+#      "jacks are switch ports 1..4 / eth_ports = 4 3 2 1" is the port LIST,
+#      not a LAN-only set; port 1 is WAN.
+#
+# Two switching models are still live and they give DIFFERENT netdev names,
+# so the file resolves them at runtime instead of baking one guess:
+#
+#   MODEL A - swconfig (base A, primary): external chip driven by
+#     files-6.18/drivers/net/phy/rtl8367b.c (compatible "realtek,rtl8367b",
+#     realtek,cpu-port, realtek,init-regs) -> ONE netdev `eth0` carrying
+#     802.1Q tags for every jack; uci gets `switch0` + eth0.9/eth0.8.
+#     Kernel side: rtl8197f/config-6.18 has CONFIG_SWCONFIG=y,
+#     CONFIG_RTL8367B_PHY=y, CONFIG_DSA off.
+#     ⚠ With base A the SoC's INTERNAL switch is also in the path:
+#     drivers/net/ethernet/rtl819x_eth.c:54-55 hard-codes RTL_NASH_VID=9 /
+#     RTL_WAN_VID=8 and :899 RTL_LAN_PORTY=0x11F on internal port 0 (RGMII to
+#     the RTL8367). A swconfig config using the stock ucidef VLAN ids 1/2
+#     therefore produces jacks that are up but silently dropped by the SoC.
+#     That is what etc/uci-defaults/06_switch_vlan_ids renumbers to 9/8
+#     (same fix base A ships for its own board).
+#
+#   MODEL B - DSA (reference base B, and iptime): net/dsa/rtl8365mb or the
+#     rtl8367 DSA driver -> one netdev PER jack with DT labels
+#     (wan/lan1/lan2/lan3) + eth0 as the conduit. Names come from
+#     ethernet-port@N { label } in the DTS; see
+#     /tmp/rebase-base/target/linux/realtek/dts/rtl8197f-rtl8367-smi-template.dtsi:31-45
+#     and /tmp/rebase/iptime-a2004mu-openwrt/.../rtl8197f-a2004mu.dts.
+#
+#   MODEL C - neither driver probed (absent module, wrong SMI pins, switch
+#     held in reset). Only `eth0` exists. We STILL give LAN a device, because
+#     the alternative is a box that boots and cannot be reached.
+
+board=$(rx2lpro_board_name)
+netmodel=""
+
+case "$board" in
+tenda,rx2l-pro|rx2l-pro)
+	if [ -d /sys/class/net/lan1 ] || [ -d /sys/class/net/wan ]; then
+		# MODEL B - DSA. Per-jack netdevs materialised from the DT
+		# ethernet-port@N { label } cells. Labels are the contract; never
+		# bridge WAN into LAN and never fall back to the untagged conduit
+		# (base B's own comment on this: rtl8197f-cudy-ax1500 dts/02_network).
+		netmodel=dsa
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+	elif [ -e /sys/class/switch/switch0 ]; then
+		# MODEL A - swconfig: the rtl8367b driver registered its agent,
+		# which is what creates /sys/class/switch/switch0. Port order =
+		# the measured jack map above. `6t@eth0` = CPU port 6, tagged,
+		# on the SoC NIC.
+		netmodel=swconfig
+		ucidef_add_switch "switch0" \
+			"4:lan:1" "3:lan:2" "2:lan:3" "1:wan" "6t@eth0"
+	else
+		# MODEL C - no switch agent visible at first boot. Untagged eth0
+		# is the only defensible LAN device (an untagged frame on the CPU
+		# NIC line defaults to the LAN VID, rtl819x_eth.c), and the 2.4 GHz
+		# AP seed is the second way in. This is the "alive and reachable,
+		# WAN visibly absent" state -- deliberately better than a silently
+		# bridged lan+wan, which loops.
+		netmodel=none
+		# LAN only, deliberately: no `wan` section is generated at all, so
+		# nothing is bridged, nothing loops, and the firewall4 `wan` zone
+		# simply has no devices. The box is reachable on 192.168.1.1 over
+		# eth0 and over the 2.4 GHz AP. Adding WAN later is a one-line
+		# `uci set network.wan=interface; uci set network.wan.device=...`.
+		ucidef_set_interface_lan "eth0"
+		logger -t rx2lpro-network \
+			"no switch driver at first boot (netmodel=none): LAN=eth0, no WAN"
+	fi
+
+	# LAN stays on the stock 192.168.1.1 so a cable and a bookmark survive
+	# the conversion (stock lan_ifname=br0; the loader's disaster_web also
+	# uses 192.168.1.1/192.168.1.99). Base A does exactly this with the
+	# generic key=value form of ucidef_set_interface, which is why it is
+	# used here instead of ucidef_set_interface_lan + a follow-up edit:
+	# 02_network:24 in
+	# /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/base-files/
+	ucidef_set_interface "lan" protocol "static" ipaddr "192.168.1.1" netmask "255.255.255.0"
+	;;
+*)
+	# Unknown/renamed board: let package/base-files' 99-default_network do
+	# its generic thing rather than inventing a topology we have not
+	# measured. It only fires when nothing else configured the network.
+	board_config_flush
+	exit 0
+	;;
+esac
+
+# ---------------------------------------------------------------------------
+# 3. PER-UNIT MACs -- single source of truth, never a second writer
+# ---------------------------------------------------------------------------
+# The 4.14 file grepped the ASCII apmib store by hand. Master has the purpose-
+# built helper for exactly this, and base B uses it on the sibling Tenda boards:
+#   /tmp/rebase-base/target/linux/realtek/base-files/etc/board.d/02_network:131
+#     label_mac=$(mtd_get_mac_ascii factory TENDA.lan_mac)
+# Our partition is labelled `CFG` (dts/RX2LPRO.dts partition@30000), and the
+# keys are measured in /tmp/rx_dump/flash/mtd2_CFG.bin at
+#   0x22d TENDA.lan_mac   0x5a5 TENDA.wlan0_mac   0x5c7 TENDA.wlan1_mac
+# (mtd_get_mac_ascii matches the key, so the offsets are documentation only --
+# they move when the vendor rewrites the config, the key names do not).
+#
+# ★ RADIO MACs, AND A CORRECTION TO THE BRIEF. Measured deltas in this unit's
+#   CFG (values elided -- the stock console password is derived from the LAN
+#   MAC, so a published MAC is a half-secret):
+#       TENDA.lan_mac   = <LAN>          (ends ..b0)
+#       TENDA.wlan0_mac = <LAN+0x14>     NOT +4
+#       TENDA.wlan1_mac = <LAN+0x04>     NOT +0xC
+#   So the brief's "2.4 = lan+4, 5 = lan+0xC" is wrong on both counts, and the
+#   +0xC value appears nowhere in CFG.
+#   WHICH DELTA IS WHICH BAND is NOT settled offline, and the two reference
+#   points disagree: stock /etc_ro/eth_name_conf.txt says `wl2_4:wlan0;
+#   wl5_0:wlan1` (=> 2.4 GHz = +0x14), while the shipped seed's header argues
+#   the vendor's own live config implies the opposite. Consequence is small
+#   and bounded -- a wrong BSSID on a radio, not lost access -- and only ONE
+#   radio is driven today (2.4 GHz rtl8192cd; the 5 GHz RTL8832BR has no 6.x
+#   driver in any tree). So etc/uci-defaults/07_wireless-2g-rx2lpro resolves
+#   the band at runtime from the driver (`/proc/wlanN/mib_rf phyBandSelect`,
+#   the technique base A uses in lib/wifi/rtl8192cd.sh) instead of trusting
+#   the key name, and logs the choice. Settle it for good on the first RAM
+#   boot -- one command, see first-boot-checklist.md item W3.
+#   The 4.14 seed that shipped computed `macaddr_add lan 4` for the 2.4 GHz
+#   AP (12_wireless-2g-rx2lpro:70); under the eth_name_conf mapping that is
+#   the 5 GHz address. Reading the key beats recomputing an offset either way.
+#
+# WAN offset: the vendor stores NO wan_mac on this unit (grep of every
+# `*mac*` key in mtd2_CFG.bin returns lan_mac/wlan0_mac/wlan1_mac only), so
+# WAN = LAN+1 remains OUR choice, exactly as PROVENANCE.md already states.
+# Data point for the eventual measurement: base B uses LAN+2 for Tenda AC23
+# and LAN+7 for Nova MW5 (rtl8197f 02_network:127,133). +1 and +2 are both
+# unused on this unit, so nothing collides; we keep +1 to stay bit-compatible
+# with what already shipped.
+#
+# LAN==WAN is not cosmetic on this SoC: the ASIC programs its WAN netif from
+# the WAN netdev's live MAC and rewrites HW-routed egress src to it
+# (rtl819x_eth.c gw_netif_mac path), so an equal pair blackholes CPU<->WAN
+# while hardware-routed frames still sail past. Hence the explicit offsets.
+
+lan_mac=$(mtd_get_mac_ascii CFG TENDA.lan_mac)
+wan_mac=""
+[ -n "$lan_mac" ] && wan_mac=$(macaddr_add "$lan_mac" 1)
+
+case "$board" in
+tenda,rx2l-pro|rx2l-pro)
+	[ -n "$lan_mac" ] || logger -t rx2lpro-network \
+		"TENDA.lan_mac not readable from CFG: falling back to driver defaults (LAN and WAN will share eth0's address)"
+	ucidef_set_interface_macaddr "lan" "$lan_mac"
+	[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" "$wan_mac"
+	# Modern ucidef extras the 4.14 base did not have. `label_mac` feeds
+	# get_mac_label()/the image metadata, and the per-device form is what
+	# base B relies on for DSA (02_network:171-191).
+	[ -n "$lan_mac" ] && ucidef_set_label_macaddr "$lan_mac"
+	# Master-only ucidef helpers (absent from the 19.07 uci-defaults.sh we
+	# ran against: `grep '^ucidef_' ` lists only set_interface*/add_switch*).
+	# `ucidef_set_label_macaddr` feeds get_mac_label() and the image
+	# metadata; the per-netdev form is what base B relies on for DSA
+	# (rtl8197f 02_network:171-191). DSA only: with swconfig there is one
+	# netdev (eth0) and the tags carry the roles, so pinning per-port MACs
+	# would be meaningless.
+	if [ "$netmodel" = dsa ]; then
+		[ -n "$lan_mac" ] && ucidef_set_bridge_mac "$lan_mac"
+		ucidef_set_network_device_mac eth0 "$lan_mac"
+		[ -n "$wan_mac" ] && ucidef_set_network_device_mac wan "$wan_mac"
+	fi
+	;;
+esac
+
+board_config_flush
+
+exit 0
