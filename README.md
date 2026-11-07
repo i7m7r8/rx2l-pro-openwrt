@@ -138,6 +138,11 @@ fields the vendor gate would have wanted are still documented in
 [`notes/webui-upgrade-contract.md`](notes/webui-upgrade-contract.md) because they
 define the container geometry.
 
+The container format and both verifications are documented instruction by
+instruction in [`port/08-veto-paths/DECRY-FIRM-FORMAT.md`](port/08-veto-paths/DECRY-FIRM-FORMAT.md);
+the short version is that the AES layer is public but the ciphertext carries an
+outer RSA-4096/SHA-512 signature and the payload carries an inner one.
+
 `check_fw` → `check_fw_type` / `check_fw_valid` / `check_fw_crc` /
 `check_mtd_size` (`check_fw` itself in `lib/libcommonprod.so`; `lib/libcommon.so`
 carries only the `check_fw_*` helpers) contain **no** RSA or

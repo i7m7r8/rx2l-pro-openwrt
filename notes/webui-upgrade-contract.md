@@ -75,6 +75,28 @@ Also checked: `publish/phone/js/upgrade.js` has no filename/extension/model
 validation (only Vue `modelValue` bindings), so the browser adds no gate of its
 own.
 
+## Why the signature cannot be satisfied either
+
+The flag is the barrier the webui *sees*; the reason it is always there is a
+second, independent one, and it is worth recording separately because "just
+craft a container" is the obvious next idea. `decry_firm` performs **two**
+RSASSA-PKCS1-v1_5/SHA-512 verifications over two different 512-byte RSA blocks:
+an outer one over the AES ciphertext (`0x004..0x203` over `SHA512(0x204..EOF)`)
+and an inner one carried *inside* the decrypted stream, over the payload. Both
+comparisons are real `memcmp`s whose result is consumed (`0x4064f0` and
+`0x406604`); the debug printers that look like the verification are dead code.
+
+The AES layer, by contrast, is fully public: the passphrase is recovered at run
+time by RSA *public* decryption of a blob embedded in the binary, so anyone can
+build a well-formed ciphertext — and it will still be rejected with
+`signed2 HASH failed` because the ciphertext is signed. The one code weakness
+(the inner `memcmp` length is `rsa_data_len - 0x13` and is never pinned to 0x40,
+so a 19-byte data field would compare zero bytes) needs a PKCS#1 block, which
+needs the private key.
+
+Format, addresses, the qemu matrix and the crack attempts:
+[`../port/08-veto-paths/DECRY-FIRM-FORMAT.md`](../port/08-veto-paths/DECRY-FIRM-FORMAT.md).
+
 ## What `check_fw` requires, field by field
 
 Decompiled with the Ghidra engine Craft Anything installed

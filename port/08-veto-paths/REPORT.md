@@ -3,7 +3,11 @@
 Question answered: *after `check_fw()` says yes, does anything else in the stock
 system veto, roll back, or re-verify the upgrade — before or after reboot?*
 
-Status: IN PROGRESS (Q1 answered, Q2/Q3/Q4 pending — see bottom).
+Status: Q1 answered and closed. The container format and both verifications are
+now documented in `DECRY-FIRM-FORMAT.md` (same directory): the webui path is
+closed twice over — `decry_firm` cannot be made to succeed on hand-built content
+(two RSA-4096/SHA-512 checks, both real), and even if it could not, `check_fw`
+would refuse on the flag it leaves behind.
 
 ---
 
