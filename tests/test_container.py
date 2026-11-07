@@ -2,7 +2,7 @@
 """Container self-test for the Tenda RX2L Pro image pipeline.
 
 Extended replacement for tests/test_container.py. The original proved that
-tools/check-cr6c.py and files/tools/firmware-utils/src/tenda-wrap.c agree with
+tools/check-cr6c.py and files/tools/tenda-wrap/src/tenda-wrap.c agree with
 the documented container spec. This adds the part that actually decides
 whether the router boots: the checks OUR stage-1 loader performs, taken from
 the disassembly of this board's own mtd1 (/tmp/work4/FINDINGS.md sections 2
@@ -68,7 +68,10 @@ def _find_root():
 ROOT = _find_root()
 CHECKER = os.path.join(ROOT, 'tools', 'check-cr6c.py')
 CVIMG_SRC = os.path.join(ROOT, 'files', 'tools', 'firmware-utils', 'src', 'cvimg.c')
-WRAP_SRC = os.path.join(ROOT, 'files', 'tools', 'firmware-utils', 'src', 'tenda-wrap.c')
+# cvimg moved: it is the platform overlay's tools/cvimg now (this tree no longer
+# carries a copy), so that case skips unless the overlay is checked out.
+
+WRAP_SRC = os.path.join(ROOT, 'files', 'tools', 'tenda-wrap', 'src', 'tenda-wrap.c')
 # staged location first, integrated location second
 GATES_CANDIDATES = [
     os.path.join(ROOT, 'scripts', 'rx2lpro-image-gates.py'),
@@ -201,24 +204,36 @@ def note_skip(label, detail=''):
 
 # --------------------------------------------------------------------------
 def build_tools(tmp):
-    """Compile the two host tools the recipe uses. Returns (cvimg, wrap) or None."""
+    """Compile the two host tools the recipe uses. Returns (cvimg, wrap); either
+    may be None.
+
+    They are built INDEPENDENTLY on purpose: cvimg now lives in the platform
+    overlay (this tree carries no copy), so its source is usually absent while
+    tenda-wrap is right here. An early return on the missing cvimg used to skip
+    every tenda-wrap case -- including the header-field controls -- while
+    printing a tidy "SKIP", which is the worst of both worlds.
+    """
     cvimg = os.path.join(tmp, 'cvimg')
     wrap = os.path.join(tmp, 'tenda-wrap')
+
+    built_cvimg = None
     if not os.path.exists(CVIMG_SRC):
-        note_skip('cvimg build', 'no %s' % CVIMG_SRC)
-        return None, None
-    r = subprocess.run(['gcc', '-Wall', '-O2', '-o', cvimg, CVIMG_SRC],
-                       capture_output=True, text=True)
-    if not check(r.returncode == 0, 'cvimg compiles clean',
+        note_skip('cvimg build', 'no %s (overlay-owned tool)' % CVIMG_SRC)
+    else:
+        r = subprocess.run(['gcc', '-Wall', '-O2', '-o', cvimg, CVIMG_SRC],
+                           capture_output=True, text=True)
+        if check(r.returncode == 0, 'cvimg compiles clean',
                  r.stderr.strip()[-200:]):
-        return None, None
+            built_cvimg = cvimg
+
+    built_wrap = None
     r = subprocess.run(['gcc', '-Wall', '-Wextra', '-Werror', '-O2',
                         '-o', wrap, WRAP_SRC], capture_output=True, text=True)
-    if not check(r.returncode == 0, 'tenda-wrap compiles clean',
-                 r.stderr.strip()[-200:]):
-        return None, None
-    return cvimg, wrap
+    if check(r.returncode == 0, 'tenda-wrap compiles clean',
+             r.stderr.strip()[-200:]):
+        built_wrap = wrap
 
+    return built_cvimg, built_wrap
 
 def case_basic_containers(tmp):
     print('1. plain container, payload 0x1200 (16+len is 4-aligned)')
@@ -437,6 +452,18 @@ def case_tenda(wrap, container_path, tmp):
     check(w[TENDA_HDR:] == data, 'container passed through unchanged')
     rc, out = run_checker(wrapped, tenda=True)
     check(rc == 0, 'checker accepts the wrapped file', 'rc=%d' % rc)
+    # Negative controls for the two fields check_fw compares (+0x20 family,
+    # +0x24 product id). tendaupgrade ignores both, so a container that differs
+    # only there would build green, flash fine, and then be refused by the
+    # webui with errCode=1 -- the checker has to fail first.
+    for label, off, val in (('product id', 0x27, w[0x27] ^ 0x01),
+                            ('family byte', 0x20, 0x06)):
+        bad = bytearray(w); bad[off] = val
+        badp = os.path.join(tmp, 'bad-%s.bin' % label.replace(' ', '-'))
+        open(badp, 'wb').write(bytes(bad))
+        rc2, out2 = run_checker(badp, tenda=True)
+        check(rc2 != 0, 'checker rejects a wrong %s' % label,
+              out2.strip().splitlines()[-1][:110])
     # B6: the wrapper is transport, not a boot gate -- and the loader must
     # validate the container that sits BEHIND it, at +0x40.
     ok, why = loader_gate(w, TENDA_HDR)

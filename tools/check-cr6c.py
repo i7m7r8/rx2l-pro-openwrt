@@ -22,6 +22,10 @@ ERASE = 0x10000
 SQUASHFS_MAGIC = b'hsqs'
 SQUASHFS_MAGIC_VENDOR = b'nice'
 ROOTFS_SIZES = {0x3c0800, 0x3c0c00}          # vendor kernel payload sizes, for context only
+# fw.product.id for this router: from the device's own CFG partition and
+# confirmed in the genuine decrypted image at +0x24 (notes/webui-upgrade-
+# contract.md, check_fw_valid). A product constant, not a per-unit secret.
+RX2L_PRO_PRODUCT_ID = 0x00031053
 
 
 def cvimg_checksum(buf):
@@ -162,6 +166,17 @@ def main():
         got = zlib.crc32(data[TENDA_HDR:]) & 0xFFFFFFFF
         rep.check(crc == got, 'header crc32 == crc32(payload)',
                   'file %#010x computed %#010x' % (crc, got))
+        # The two fields check_fw actually compares (libcommonprod.so@0x2a518:
+        # check_fw_type switches on +0x20, check_fw_valid compares +0x24 against
+        # the CFG value). tendaupgrade ignores both, which is exactly why they
+        # have to be checked HERE: a wrong product id builds green, flashes via
+        # tendaupgrade, and is then refused by the webui with errCode=1.
+        fam = h[0x20]
+        rep.check(fam == 2, 'image family byte +0x20 == 2', '%#x' % fam)
+        pid = struct.unpack('>I', h[0x24:0x28])[0]
+        rep.check(pid == RX2L_PRO_PRODUCT_ID,
+                  'fw.product.id +0x24 == 0x%08x' % RX2L_PRO_PRODUCT_ID,
+                  '%#010x' % pid)
         off = TENDA_HDR
 
     if a.stock:

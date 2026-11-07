@@ -49,6 +49,15 @@ jobs:
       - name: Round-trip a synthetic container
         run: python3 tests/test_container.py
 
+      # The build runs files/scripts/rx2lpro-image-gates.py ($(TOPDIR)/scripts/
+      # in the tree); the tests run scripts/rx2lpro-image-gates.py. Identical
+      # today, and a silent divergence would mean CI validating a different
+      # gate than the one that decides whether an image is produced.
+      - name: the two copies of the image gates are the same file
+        run: |
+          cmp scripts/rx2lpro-image-gates.py files/scripts/rx2lpro-image-gates.py
+          echo "scripts/ and files/scripts/ agree"
+
       # files/ is copied OVER the platform overlay, so anything stale in it does
       # not merely sit in the tree -- it replaces a 6.18 file with a 4.14 one.
       # That is how the 10:37 run lost CONFIG_TARGET_rtl819x entirely: a 4.14
