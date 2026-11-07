@@ -41,9 +41,23 @@ for sec in $(uci -q show network | sed -n "s/^network\.\([^.=]*\)=device$/\1/p")
 	uci -q add_list network."$sec".ports='eth0.9'
 done
 
-# wan: device follows the renumbered VLAN
+# wan: device follows the renumbered VLAN.
+#
+# The interface is not the only thing that names it. ucidef_set_interface_macaddr
+# in board.d/02_network gives wan a per-unit MAC, and config_generate turns that
+# into a `config device` section named after the DEVICE (bin/config_generate:
+# `add network device; set ...name='$device'`). Renaming only network.wan.device
+# would leave that section watching eth0.2 -- a device nothing uses -- so the WAN
+# MAC would apply to nothing and eth0.8 would come up on the default address.
+# Both have to move together.
 old="$(uci -q get network.wan.device)"
-[ "$old" = "eth0.2" ] && uci set network.wan.device='eth0.8'
+if [ "$old" = "eth0.2" ]; then
+	uci set network.wan.device='eth0.8'
+	for sec in $(uci -q show network | sed -n "s/^network\.\([^.=]*\)=device$/\1/p"); do
+		[ "$(uci -q get network."$sec".name)" = "eth0.2" ] || continue
+		uci set network."$sec".name='eth0.8'
+	done
+fi
 [ -n "$(uci -q get network.wan6)" ] && uci set network.wan6.device='eth0.8'
 
 uci commit network
