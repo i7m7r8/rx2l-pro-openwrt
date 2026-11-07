@@ -131,3 +131,38 @@ CFM/CFM_BACKUP are not interchangeable.
 Not proven by them: anything about how *our* image behaves — that needs the
 device. In particular the RF calibration path and the 5 GHz card remain
 untested.
+
+## 7. mtd4 / the vendor rootfs: valid squashfs, not readable by stock tools
+
+Unmangling the 4-byte magic (`nice` → `hsqs`, a copy only) gives a parseable
+superblock from **both** copies:
+
+| | flashed (mtd4) | OTA image (decrypted) |
+|---|---|---|
+| squashfs version | 4.0 | 4.0 |
+| filesystem size | 8,172,452 | 8,170,944 |
+| block size / compression | 131072 / xz | 131072 / xz |
+| mkfs_time | 2038-06-11 (bogus) | 2038-05-30 (bogus) |
+
+They are **not the same build** (1,508 bytes apart), which matches the container
+`len` difference of 0x400 noted in §3.
+
+But neither extracts: stock `unsquashfs` reads the superblock, then dies with
+
+```
+read_block: failed to read block @0x7ca0xx
+read_fragment_table: failed to read fragment table index
+FATAL ERROR: File system corruption detected
+```
+
+— at the *same* relative position in both. So the vendor's mksquashfs output is
+non-standard beyond the magic; the fragment table does not decode. Consequences:
+
+* do not plan on unpacking or repacking the stock rootfs with standard tools; the
+  userspace analysis this port relies on came from an extraction that predates
+  this audit, not from these attempts;
+* it is another reason our own images ship a **plain `hsqs`** (and why the build
+  gate rejects a mangled magic in our containers unless told it is a stock dump):
+  we control the whole pipeline on our side, and the vendor's format is a trap.
+
+Recorded as an observation, not a blocker: nothing in the port reads mtd4.
