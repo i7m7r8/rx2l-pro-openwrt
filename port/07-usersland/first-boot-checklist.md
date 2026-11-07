@@ -16,6 +16,28 @@ Legend: **[ inherited ]** = carried from the 4.14 table, still true.
 
 ---
 
+## ⚠ READ THIS FIRST — the table below predates the current tree
+
+Several rows describe files that have since been **removed or replaced**. The
+rows are kept because their *symptom* and *proof* columns are still the right
+way to diagnose each failure, but these facts supersede what they assert:
+
+| row | what it says | what is true now |
+|---|---|---|
+| A1 | `lib/realtek.sh` rewritten | **deleted**. `board_name` comes from the DTS `compatible` alone (`02_sysinfo`: `strings /proc/device-tree/compatible \| head -1`). Nothing writes `/tmp/sysinfo/board_name` from `/proc/cpuinfo` any more. |
+| A2 | DTS is `dts/RX2LPRO.dts` | now `dts/rtl8197f_tenda_rx2lpro.dts`, and the consumers match `rx2l-pro\|*rx2l-pro`, so both `rx2l-pro` and `tenda,rx2l-pro` (the value the kernel actually reports) work. A pre-clone CI gate enforces it. |
+| A3 | profile in `image/Makefile` | now `files/target/linux/rtl819x/image/rtl8197f.mk`, device `tenda_rx2lpro` (hyphen-free: the Kconfig symbol is `DEVICE_$(subst -,_,NAME)`). |
+| B3 | "base A ships no mtdsplit_cvimg at all" | **fixed**: `mtdsplit_cvimg.c` ships in this tree with an additive Makefile/Kconfig, and `CONFIG_MTD_SPLIT_CVIMG_FW=y` is set. Without that symbol the parser was compiled by nothing and the firmware partition was never split. |
+| B5 | rootfs_data comes from `cvimg -j` marker | **no marker is shipped, deliberately**: `CONFIG_MTD_SPLIT_SQUASHFS_ROOT=y` carves `rootfs_data` from the tail of `rootfs`, and the reference board's reason for disabling that (a loader checksum lives right after the squashfs) does not apply here — our container's checksum is inside the container at 16+len. |
+| C1 | switch has "no DT node and no driver" | **fixed**: the board DTS has the `rtl8367b` node (SMI on gpio1 24/23/26, CPU port 6, `realtek,extif` 10 cells) and `patches-6.18/999` wires the driver into the kernel — it had never been compiled before, because no Kconfig defined `RTL8367B_PHY`. |
+| C2 | runtime netmodel detection | **not used**. One model: swconfig `switch0`, VLANs 9/8, devices `eth0.9`/`eth0.8`. |
+| C3 | `06_switch_vlan_ids` must run | ours is `13_switch_vlans_rx2lpro`, gated on `tenda,rx2l-pro` (the platform's 06 is gated on its own board and is inert here). Same renumber: 1→9, 2→8, bridge port and WAN device follow. |
+| — | switch port map unknown | **now measured** from the stock CFG: `lan1/2/3.phyid=4/3/2`, `wan1.phyid_default=1`, CPU trunk bit 6 in both VLAN masks. |
+| — | 5 GHz | **absent and off by design**: `CONFIG_PCI` is not set, and it could not have been — the platform's `arch/mips/realtek/Kconfig` still `select HW_HAS_PCI`, a symbol 6.18 does not have. See `port/06-wifi-5g-8832br/REPORT.md`. Do not expect `wlan0`-as-5GHz on first boot. |
+
+
+---
+
 ## A. Identity — does the board name resolve at all
 
 | # | Risk | Where it lives | Symptom if wrong | Proof (read-only) |
