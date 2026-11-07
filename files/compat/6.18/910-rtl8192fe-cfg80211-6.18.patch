@@ -1,5 +1,14 @@
---- a/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c	2026-11-07 15:06:00.010994109 +0000
-+++ b/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c	2026-11-07 15:06:00.906994109 +0000
+--- a/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c
++++ b/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c
+@@ -5178,7 +5178,7 @@
+ 	return 0;
+ }
+ 
+-static void realtek_mgmt_frame_register(struct wiphy *wiphy,
++static void __maybe_unused realtek_mgmt_frame_register(struct wiphy *wiphy,
+ 				       struct  wireless_dev *wdev,
+ 				       u16 frame_type, bool reg)
+ {
 @@ -6159,7 +6159,7 @@
  			{
  				if((hostapd_acs_scaning == 0 || !priv->pmib->miscEntry.auto_channel))
@@ -19,7 +28,7 @@
  	.dump_survey = realtek_dump_survey,//survey_dump
  	.start_ap = realtek_start_ap,
 
-Notes on why these two and nothing else:
+Notes on why these three hunks and nothing else:
 
 * .mgmt_frame_register was removed from struct cfg80211_ops in 6.9, replaced by
   .update_mgmt_frame_registrations(struct wiphy *, struct wireless_dev *,
@@ -28,14 +37,15 @@ Notes on why these two and nothing else:
   cfg80211_mgmt_tx_status, so dropping the callback loses the bookkeeping but
   not the feature. Mapping it properly means translating (frame_type, reg) into
   the upd->interface_stypes/mgmt_stypes bitmaps, which cannot be validated
-  without the radio -- so it is dropped deliberately, not silently.
+  without the radio -- so it is dropped deliberately, not silently. The function
+  stays (marked __maybe_unused) because it documents the mapping.
 
 * cfg80211_ch_switch_notify() gained the `link_id` argument in the same release
-  (6.18 header: `void cfg80211_ch_switch_notify(struct net_device *dev, struct
+  (6.18: `void cfg80211_ch_switch_notify(struct net_device *dev, struct
   cfg80211_chan_def *chandef, unsigned int link_id)`). This driver has no MLO,
   so 0 is the only correct value.
 
 Checked against include/net/cfg80211.h from torvalds/linux v6.18: the file uses
-82 cfg80211_*/ieee80211_* identifiers and every one of them resolves in the 6.18
-headers except these two and ten names that are the driver's own structures
+82 cfg80211_*/ieee80211_* identifiers and every kernel one resolves in the 6.18
+headers except these two; the other ten are the driver's own structures
 (cfg80211_event, cfg80211_cmd_queue, ...).
