@@ -35,11 +35,65 @@ jobs:
 
       - name: Build tenda-wrap
         run: |
+          # The path follows the file: it ships as a standalone HostBuild under
+          # files/tools/tenda-wrap/ (on this base tools/firmware-utils is a
+          # git-fed package with no in-tree src/, so a .c dropped there is
+          # simply not compiled). This step is what keeps the tool honest even
+          # when the OpenWrt image job is skipped.
           gcc -Wall -Wextra -Werror -O2 -o /tmp/tenda-wrap \
-            files/tools/firmware-utils/src/tenda-wrap.c
+            files/tools/tenda-wrap/src/tenda-wrap.c
 
       - name: Round-trip a synthetic container
         run: python3 tests/test_container.py
+
+      # files/ is copied OVER the platform overlay, so anything stale in it does
+      # not merely sit in the tree -- it replaces a 6.18 file with a 4.14 one.
+      # That is how the 10:37 run lost CONFIG_TARGET_rtl819x entirely: a 4.14
+      # target Makefile (BOARD:=realtek) shadowed the overlay's, `make defconfig`
+      # dropped every symbol in the seed, and the failure only surfaced ~90 s
+      # into the real build. These four checks cost under a second and run
+      # before the base tree is cloned.
+      - name: files/ carries nothing a 6.18 tree cannot use
+        run: |
+          rc=0
+          # 1. No kernel-version-pinned material in the build overlay.
+          stale=$(find files -maxdepth 6 \( -name 'files-*.*' -o -name 'patches-*.*' \
+                    -o -name 'config-[0-9]*' \) -print 2>/dev/null)
+          if [ -n "$stale" ]; then
+            echo "!!! kernel-versioned material inside files/ (belongs under port/):" >&2
+            echo "$stale" >&2
+            rc=1
+          fi
+          # 2. Pre-21.02 image-recipe syntax is silently ignored by modern
+          #    image.mk: the device simply does not exist and no DEVICE_* symbol
+          #    is generated.
+          if grep -rnE "DEVICE_TITLE[[:space:]]*:=" files/target 2>/dev/null; then
+            echo "!!! pre-21.02 image syntax in files/target (DEVICE_TITLE/PROFILES)" >&2
+            rc=1
+          fi
+          # 3. A target Makefile may not set its own BOARD/ARCH/PATCHVER: the
+          #    platform owns the target on this base, and a shadowing copy is
+          #    exactly the failure above.
+          for mk in $(find files/target/linux -mindepth 2 -maxdepth 2 -name Makefile 2>/dev/null); do
+            if grep -qE "KERNEL_PATCHVER|^ARCH:=|^BOARD:=" "$mk"; then
+              echo "!!! $mk declares target identity; on this base the target comes from the overlay" >&2
+              echo "    (if it must exist, it has to match the overlay exactly -- see build.sh)" >&2
+              rc=1
+            fi
+          done
+          # 4. The device profile name has to match the seed, or the symbol is
+          #    dropped silently: Kconfig spells it DEVICE_$(subst -,_,NAME).
+          dev=$(grep -rhoE "^define Device/[A-Za-z0-9_.-]+" files/target/linux/*/image/*.mk 2>/dev/null \
+                | sed 's|.*/||' | tr -d '\r')
+          for d in $dev; do
+            sym="$(echo "$d" | tr '-' '_')"
+            if ! grep -q "DEVICE_${sym}=y" seed.config; then
+              echo "!!! device '$d' has no CONFIG_TARGET_..._DEVICE_${sym}=y in seed.config" >&2
+              rc=1
+            fi
+          done
+          [ $rc -eq 0 ] && echo "files/ is 6.18-clean and every device has a seed symbol"
+          exit $rc
 
       # feeds.conf is parsed by a Perl script that strips comments with
       # s/#.+$// -- one or MORE characters after the hash. A line whose only
