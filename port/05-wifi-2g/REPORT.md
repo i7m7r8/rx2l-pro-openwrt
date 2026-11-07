@@ -221,3 +221,33 @@ those options map onto (`phyBandSelect`, `band`, `use40M`, `led_type`,
 whether the rtlmib path applies them at the same point the driver's own config
 reader would have. That is a one-boot test: `wifi up`, then
 `dmesg | grep -i 'set mib'` and `cat /proc/<if>/mib_all`.
+
+## The MIB names, verified against the driver that will run them
+
+The open question left above was "whether our uci option names map onto MIB keys
+the 6.18 HAL's `set_mib` table accepts". Checked directly in
+`files-6.18/.../rtl8192fe/8192cd_ioctl.c` — the string table `set_mib` matches
+against. Every key `rtl8192cd.sh` emits is there:
+
+| key | in `set_mib` |
+|---|---|
+| `phyBandSelect`, `band`, `channel`, `regdomain`, `led_type` | ✔ |
+| `use40M`, `2ndchoffset`, `bcnint`, `dtimperiod` | ✔ |
+| `ssid`, `opmode`, `hiddenAP`, `stanum` | ✔ |
+| `ft_enable`, `ft_mdid`, `ft_over_ds`, `ft_reasoc_timeout`, `ft_r0kh_id` | ✔ |
+
+18 of 18. Nothing the handler writes is a name the driver would ignore.
+
+Two facts from the same audit that also settle how it must be applied:
+
+* the **stock kernel's** strings contain `set_mib` / `get_mib` but **not**
+  `RTL8192CD.dat` — the vendor radio is configured through the MIB ioctl, not
+  through the config file. That is exactly why `rtlmib` exists in the platform
+  tree and why this port replays the pairs through it (see the note above).
+* every one of those key strings is also present in the stock 4.4.176 kernel
+  image, except the 802.11r group — stock's `rtl8192cd` build predates them,
+  while the 6.18 HAL carries them. Our handler is written against the latter.
+
+What is still unproven is behaviour, not naming: whether the driver *accepts*
+each value at the point we send it (before/after `ifconfig up`), which is a
+one-boot test with `dmesg | grep -i 'set mib'` and `cat /proc/<if>/mib_all`.
