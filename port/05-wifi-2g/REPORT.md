@@ -195,3 +195,29 @@ as they did to the 4.14 vendor driver. The two handlers in play — ours and the
 platform's 527-line one — read different option sets, and this tree keeps ours
 because it is paired with `uci-defaults/12_wireless-2g-rx2lpro`. Deciding
 between them needs one boot with `wifi up` and a look at the radio.
+
+## The uci option names, checked against the handler (closes the last open item)
+
+The note above left one thing unresolved: "whether our uci option names mean the
+same to the 6.18 HAL as they did to the 4.14 driver". The part that can be
+settled statically is the *option* contract between
+`uci-defaults/12_wireless-2g-rx2lpro` and
+`lib/netifd/wireless/rtl8192cd.sh`. Read both sides out mechanically:
+
+| set by the uci-default | read by the handler? |
+|---|---|
+| `band`, `channel`, `country`, `htmode`, `macaddr`, `ssid`, `encryption`, `mode` | **yes** — `drv_rtl8192cd_setup()`/`_emit_vif()` read exactly these |
+| `device`, `disabled`, `network`, `type` | not by the handler, and that is correct: netifd's wireless core owns device binding, enable/disable, bridge membership and handler selection |
+| `hwmode` | **not read** — harmless legacy; `band` is what this driver takes (bitmask, see the file header) |
+| — | handler also reads `key`, `beacon_int`, `dtim_period`, `led_type`, `hidden`, `maxassoc`, `ifname`, `phy`, the 802.11r set — all optional, all have defaults (`led_type` defaults to 11) |
+
+So there is no option the default file sets that the handler drops, and none the
+handler needs that the file leaves undefined for an open AP. `key` is absent
+because `encryption='none'` — the deliberate first-boot fallback.
+
+What this does **not** settle, and cannot without silicon: whether the *MIB keys*
+those options map onto (`phyBandSelect`, `band`, `use40M`, `led_type`,
+`2ndchoffset`, …) are the ones the 6.18 HAL's `set_mib` table accepts, and
+whether the rtlmib path applies them at the same point the driver's own config
+reader would have. That is a one-boot test: `wifi up`, then
+`dmesg | grep -i 'set mib'` and `cat /proc/<if>/mib_all`.
