@@ -364,14 +364,21 @@ grep -q '^CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_' .config || {
 # with the actual compiler error nowhere -- 5083 lines of log and not one of them
 # said why. That costs a full run to learn nothing.
 BUILD_LOG="${BUILD_LOG:-/tmp/rx2l-build.log}"
+set -o pipefail   # WITHOUT THIS the `| tee` below masks make's exit status
 make -j"$JOBS" download 2>&1 | tee "$BUILD_LOG"
 if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
+	# The capture above is only useful if it is shown. A first attempt at this
+	# used `if ! make ... | tee log` without pipefail, so the condition tested
+	# tee (always 0), the branch never ran, and a 90-minute failure still printed
+	# nothing but "ERROR: target/linux failed to build."
 	echo >&2
 	echo "================= BUILD FAILED =================" >&2
 	echo "--- the failing output (last 80 lines that are not make plan lines) ---" >&2
 	grep -vE '^(make\[[0-9]+\]|  *make\[[0-9]+\])' "$BUILD_LOG" | tail -80 >&2
 	echo "--- and the last 40 lines regardless ---" >&2
 	tail -40 "$BUILD_LOG" >&2
+	echo "--- re-running target/linux with V=s so the error is explicit ---" >&2
+	make -j1 V=s target/linux/compile 2>&1 | tail -120 >&2 || true
 	echo "=============== END BUILD LOG ==================" >&2
 	exit 1
 fi
