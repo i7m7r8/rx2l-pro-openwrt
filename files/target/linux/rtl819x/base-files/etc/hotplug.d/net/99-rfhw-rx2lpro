@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Apply this board's 2.4 GHz RF calibration as soon as the vendor rtl8192cd
+# netdev exists, and re-apply it whenever the interface is re-registered.
+#
+# Why a hotplug hook and not the wireless bring-up:
+#   The driver latches dot11RFEntry.xcap while the hardware is initialised at
+#   interface OPEN (8192cd_hw.c, the `if (xcap != 0xff)' / `0 < xcap < 0x3f'
+#   branch that programs BB regs 0x24/0x28), and stock pushed the same values
+#   from /tmp/rfhw.sh in rcS, i.e. before any ifup.  By the time netifd's
+#   wireless section runs, hostapd has already opened the iftype AP, so a
+#   post-up apply would be one boot late.  `add`/`register` is the first
+#   moment the netdev name exists and the only moment it is guaranteed down.
+#
+# Why the interface is identified by identity and not by name:
+#   which name the vendor driver gets depends on load order, exactly the
+#   failure that broke the reference board.  /proc/<if>/mib_all is created
+#   only by rtl8192cd, so it is the identity test.  If the RTL8832BR ever
+#   comes up under the same module, the 2G rate-table keys alone select the
+#   right one, because only the WMAC has a 14-entry CCK table in the apmib.
+#
+# BusyBox ash only; no BUSYBOX_CONFIG_FEATURE_TR_CLASSES-dependent constructs.
+
+[ "$ACTION" = add ] || [ "$ACTION" = register ] || exit 0
+[ -e "/proc/$INTERFACE/mib_all" ] || exit 0
+
+. /lib/functions.sh 2>/dev/null
+# board_name on this base is the DTS compatible's first string
+# ("tenda,rx2l-pro"), not the bare "rx2l-pro" the 4.14 target wrote.
+case "$(board_name 2>/dev/null)" in
+	*rx2l-pro) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /usr/sbin/rtlmib ] || exit 0
+
+# Root interface only.  Every key rfhw-convert writes is a radio-level
+# dot11RFEntry field, and the 6.18 sibling port measured that pushing
+# radio-scoped MIBs to a non-root VAP Oopses in init_beacon() (their handler
+# notes it for `band', 8192cd_ioctl.c).  VAPs inherit the radio settings.
+rfhw-convert "$INTERFACE"
+exit 0
