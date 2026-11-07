@@ -138,10 +138,39 @@ Serial console is `115200` on `ttyS0` (measured from this board's cmdline).
 
 ## 6. If it does not come back
 
-1. Power-cycle once and watch the console: a kernel panic and a dead loader look
-   completely different, and only one of them needs recovery.
-2. Loader `AUTOBURN` over TFTP with `*-factory-cr6c.bin`, or the loader command
-   monitor (`XMOD` into RAM, then `J <addr>`) with `*-initramfs-kernel.bin`.
-3. The disaster web path is `192.168.1.1` with `serverip=192.168.1.99`
-   (`FACTS.md` §7).
-4. Last resort: write the saved `mtd` dumps back.
+The bootloader in mtd1 is a Realtek stage-1 with a command monitor. Its strings
+were read out of this unit's own dump (the stage is gzip-compressed at mtd1
+`+0x8d60`; decompressed, 229,584 bytes), so the syntax below is the loader's own,
+not a guess:
+
+```
+<RealTek>                      prompt
+LOADADDR: <Load Address>       set the load address
+J: Jump to <TargetAddress>     jump
+XMOD <addr>  [jump]            XMODEM receive into RAM, optionally jump
+AUTOBURN: 0/1                  arm/disarm the burn of what was downloaded
+FL: 0/1                        flash unlock/lock
+T : T <len>                    timer
+COUNTER: Dump Asic Counter
+```
+
+and the loader's own message strings include
+`**TFTP GET File %s,Size %X Byte`, `*TFTP Client Download Success! File Size = %X Bytes`,
+`Find burn`, `Find kernel-fs`, `Find root-fs`, `r6cr`, plus the `cr6c`/`cs6c`
+signatures. In other words it parses the container itself and looks for the
+kernel-fs and root-fs inside it — which is why `*-factory-cr6c.bin` is the right
+artifact for the burn path.
+
+Procedure:
+
+1. Power-cycle once and watch the console. A kernel panic and a dead loader look
+   completely different, and only one needs recovery.
+2. **RAM boot** (writes no flash): `XMOD <addr>` to receive
+   `*-initramfs-kernel.bin` into RAM, then `J <addr>`.
+3. **Burn path**: `AUTOBURN 1` then the TFTP download of `*-factory-cr6c.bin`,
+   then flash it from the loader.
+4. **Disaster web**: the environment defaults in mtd1 (`0x2f004`) are
+   `disaster_web=1`, `ipaddr=192.168.1.1`, `netmask=255.255.255.0`,
+   `serverip=192.168.1.99` — so the recovery page is at `192.168.1.1` with the
+   server at `.99`.
+5. Last resort: write the saved `mtd` dumps back from a root shell.
