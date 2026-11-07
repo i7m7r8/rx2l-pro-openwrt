@@ -55,6 +55,10 @@ jobs:
       # before the base tree is cloned.
       - name: files/ carries nothing a 6.18 tree cannot use
         run: |
+          # rc is managed explicitly: GitHub runs this with bash -e, and
+          # `var=$(cmd | grep -v ...)` returns the pipeline's status, so a
+          # legitimate "nothing matched" would abort the step with no message.
+          set +e
           rc=0
           # 1. No kernel-version-pinned TREES in the build overlay.
           #    files-<ver>/ and patches-<ver>/ are whole 4.14-era layers that
@@ -134,6 +138,7 @@ jobs:
       # the splitter at all.
       - name: DTS + kernel-config invariants that only fail on hardware
         run: |
+          set +e
           rc=0
           dts=files/target/linux/rtl819x/dts/rtl8197f_tenda_rx2lpro.dts
           [ -f "$dts" ] || { echo "!!! $dts missing" >&2; exit 1; }
