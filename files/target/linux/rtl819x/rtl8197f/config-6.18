@@ -260,7 +260,12 @@ CONFIG_WLAN_HAL_88XX=y
 CONFIG_WLAN_HAL_8197F=y
 CONFIG_RTL_ODM_WLAN_DRIVER=y
 CONFIG_PCI_HCI=y
-# CONFIG_PCI is not set
+# EXPERIMENT BRANCH ONLY (test/pci-enable): the 5 GHz card is on PCIe, and
+# the host driver (arch/mips/pci/pci-realtek.c) is present but was never
+# built on 6.18. This branch answers ONE question -- does it compile? --
+# without changing what the shipped image builds. Boot validation needs the
+# bench (the platform's note is that enabling PCI hung their boot).
+CONFIG_PCI=y
 # CONFIG_PCI_QUIRKS is not set
 CONFIG_RTL8192FE_RX23302=y
 CONFIG_WIRELESS_EXT=y
