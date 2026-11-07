@@ -41,8 +41,15 @@ CR6C_MAGICS = (b"cr6c", b"cs6c")  # what the mtd1 loader compares against
 # Words we cannot derive: they differ between vendor builds and are not
 # checksums of the payload, so they must be copied from a genuine image.
 OPAQUE_WORDS = {0x04: "build id/epoch", 0x08: "build id/epoch",
-                0x14: "kernel reference (kref)",
-                0x1c: "flag block", 0x24: "flag block"}
+                0x14: "kernel reference (kref)", 0x1c: "hardware/id codes"}
+
+# check_fw_valid() does ntohdr(header+0x24) == strtoul(GetValue("fw.product.id"),16)
+# and returns 1 (valid) only on a match. Our CFG partition says product.id=0x00031053
+# and the genuine image carries 0x00031053 at +0x24, so this is a checked field,
+# not an opaque one.
+PRODUCT_ID_OFF = 0x24
+RX2LPRO_PRODUCT_ID = 0x00031053
+PRODUCT_ID = RX2LPRO_PRODUCT_ID   # set from --product-id in main()
 
 
 def be32(buf, off):
@@ -88,6 +95,26 @@ def check_format(buf, problems):
         fail(problems, f"payload CRC32 at +0x18 is {want:#010x}, computed {got:#010x}")
         return None
     ok(f"payload CRC32 +0x18 = {got:#010x}")
+
+    # check_fw_valid(): header+0x24 must equal the device's fw.product.id.
+    pid = be32(buf, PRODUCT_ID_OFF)
+    if PRODUCT_ID is not None and pid != PRODUCT_ID:
+        fail(problems, f"product id at +{PRODUCT_ID_OFF:#04x} is {pid:#010x} but this "
+                       f"router's CFG says {PRODUCT_ID:#010x}; check_fw_valid returns "
+                       "1 (valid) only when they match")
+    else:
+        ok(f"product id +{PRODUCT_ID_OFF:#04x} = {pid:#010x}"
+           + ("" if PRODUCT_ID is not None else " (not compared: no --product-id)"))
+
+    # check_fw_type() switches on the family byte at +0x20: 2 and 4 are the
+    # shapes genuine images of this generation use (the type-6 layout is a
+    # dual-image package, which our single-KernelFS board is not).
+    fam = buf[0x20]
+    if fam not in (2, 4):
+        fail(problems, f"image family byte at +0x20 is {fam}; check_fw_type only "
+                       "accepts 2 or 4 for this header magic")
+    else:
+        ok(f"image family byte +0x20 = {fam}")
 
     if n > KERNELFS_MAX:
         fail(problems, f"image is {n:#x} bytes; KernelFS (mtd3) is {KERNELFS_MAX:#x} "
@@ -208,13 +235,18 @@ def check_decry_pass_through(buf, rootfs, probe_dir, problems):
 
 
 def main():
+    global PRODUCT_ID
     ap = argparse.ArgumentParser()
     ap.add_argument("image")
     ap.add_argument("--reference", help="genuine decrypted plaintext image of this model")
+    ap.add_argument("--product-id", default=hex(RX2LPRO_PRODUCT_ID),
+                    help="this router's fw.product.id, read from the CFG partition")
     ap.add_argument("--rootfs", help="extracted stock rootfs, to run the decry_firm probe")
     ap.add_argument("--probe", action="store_true", help="run the decry_firm probe")
     ap.add_argument("--probe-dir", default="/tmp/webui-check-probe")
     a = ap.parse_args()
+    PRODUCT_ID = int(a.product_id, 16) if a.product_id.lower().startswith("0x") \
+        else int(a.product_id)
 
     buf = open(a.image, "rb").read()
     print(f"checking {a.image} ({len(buf):#x} bytes)")

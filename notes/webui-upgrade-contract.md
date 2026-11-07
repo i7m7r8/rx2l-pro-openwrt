@@ -61,27 +61,61 @@ Also checked: `publish/phone/js/upgrade.js` has no filename/extension/model
 validation (only Vue `modelValue` bindings), so the browser adds no gate of its
 own.
 
-## What `check_fw` actually requires
+## What `check_fw` requires, field by field
 
-`check_fw` (libgo.so 0x42758, and a second copy in `libcommonprod.so`) calls, in
-order, `check_fw_type`, `check_fw_valid`, `check_fw_crc`, `check_mtd_size` — all
-four defined in `lib/libcommon.so` (`check_fw_type@0xa824`, `check_mtd_size@0xbd60`,
-`check_fw_crc@0xb618`, `check_fw_valid@0xc42c`). There is **no** RSA/`EVP_DigestVerify`
-symbol anywhere in that cone. Its log strings name the criteria:
+Decompiled with the Ghidra engine Craft Anything installed
+(`check_fw_type`, `check_fw_valid`, `check_fw_crc`, `check_mtd_size` out of
+`lib/libcommon.so`). `check_fw_valid` returns **1 = valid**; the others return
+`-1` on the accepted path, so read the returns as "which branch matched", not
+"error code".
 
-* `check_fw_type`: `arg is null.`, `filebuf is too smaller. size is %ld`
-* `check_fw_valid`: `read image header is fail.`, `get file size fail`,
-  `only boot image`, `second image error`, `fw_type is not support:%d.`,
-  `fw.product.id` / `get fw product id is fail.`
-* `check_cmp_policy_file`: it also unpacks and compares `/etc/policy.cfg.lzma`
-  (`/bin/lzma d`, `/bin/mv`, `/etc/policy.old`) — the OEM "policy" blob, separate
-  from the image.
+* `check_fw_type(buf, size)` — `size >= 0x40` else reject. Copies the first
+  `0x44` bytes, then `ntohl(buf[0x00])` must be `0x27051956`, and the byte at
+  **`+0x20`** selects the family: `2` (our images) or `4`, and it recognizes a
+  `0x27051958`/type-4 variant plus a `0x48844884` container. For type 2 it also
+  tests `ntohl(buf[0x40]) == 0x476f6431` ("God1") -- that is a *different* OEM
+  container family; ours stays `cr6c`, which falls through to the accepted
+  return. So: **`+0x20 == 0x02` and container magic `cr6c` is the shape our
+  board's genuine images use**, and it must be preserved, not invented.
+* `check_fw_valid(type, path)` — reads the `0x40`-byte header, and for
+  `type == 6` additionally requires the dual-image layout
+  (`size - payload_len == 0x80`, then a second header at `payload_len + 0x40`),
+  logging `only boot image` / `second image error`. Types other than
+  `{2,4,6}` hit `fw_type is not support:%d`. Then the decisive comparison:
 
-Note the dual-image vocabulary (`only boot image`, `second image error`) even
-though **our board has only one `KernelFS`** — the validator is shared OEM code,
-so `fw_type` selects how many images it expects. Getting `fw_type` right is part
-of matching a genuine image (the value is handed to the flasher as
-`systool_call_writeImage_delay_11ac(fw_type)` and `fw_type` is a global).
+  ```c
+  GetValue("fw.product.id", buf);              /* from the CFG partition */
+  if (ntohl(header[0x24]) == strtoul(buf, 0, 16))  return 1;   /* valid */
+  ```
+
+  Verified against two independent sources: our `mtd2_CFG.bin` contains
+  `product.id=0x00031053`, and the genuine RX2L Pro plaintext image carries
+  `00 03 10 53` at `+0x24`. **So `+0x24` is not opaque -- it is the product id,
+  and it must equal this router's `fw.product.id`.** That also retires the old
+  guess that `+0x04`/`+0x08` were hashes of the model string (they are not, and
+  they are still copied verbatim).
+* `check_fw_crc` — the payload CRC32 at `+0x18`, which `tools/tenda-wrap`
+  already computes and `tools/check-webui-bin.py` re-verifies.
+* `check_mtd_size` — bounds the image by the target partition.
+
+`tools/check-webui-bin.py` now encodes all of this, was run against the genuine
+image (passes) and against single-byte mutations of the CRC field and the
+product-id field (each rejected on exactly the right rule), and can re-run the
+`decry_firm` pass-through probe itself with `--probe --rootfs <extracted rootfs>`.
+
+## Still unverified (and how each gets settled)
+
+* The `fw_type` value the webui passes for our product (types `2/4/6` are the
+  supported set, `6` is the dual-image one and our board has a single
+  `KernelFS`, so `fw_type` must not be 6) -- read from `libgo.so`'s `fw_type`
+  global and the CGI parameter that sets it.
+* Whether some *other* daemon that reads `UPGRADE_DECRY_FAIL_FLAG`
+  (`business_proc`, `netctrl`, `cwmpd`) vetoes or rolls back a flash after
+  `check_fw` passed. Our board has one `KernelFS`, so a rollback has nowhere to
+  go -- but that has to be demonstrated, not assumed.
+* Whether `check_mtd_size` bounds by the 15.5 MiB `KernelFS` or by something
+  else; `tools/check-webui-bin.py` currently uses the `mtd3` size from
+  `/proc/mtd`.
 
 ## The header we must reproduce
 
@@ -96,8 +130,9 @@ bytes, all big-endian):
 +0x10 80 00 00 00
 +0x14 80 8d 45 c0          kref
 +0x18 a8 6f 8c 2b          CRC32 of the payload        <- check_fw_crc
-+0x1c 05 05 02 03 02 00 00 00
-+0x24 00 03 10 53
++0x1c 05 05 02 03          (hardware/id codes -- copy verbatim)
++0x20 02                   image family (check_fw_type switches on this byte)
++0x24 00 03 10 53          fw.product.id, must equal CFG's product.id=0x00031053
 +0x28 00 b8 bc 54          total length = payload + 0x40
 +0x2c..0x3f 00             zero padding
 +0x40 63 72 36 63          "cr6c" — the Realtek container starts here
