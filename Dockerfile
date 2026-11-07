@@ -11,7 +11,17 @@
 #   docker build --build-arg U=$(id -u) --build-arg G=$(id -g) -t owrt-rx2lpro .
 FROM debian:bullseye
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# Debian 11 is past EOL, so deb.debian.org no longer serves the point versions
+# the debian:bullseye image's baked apt lists name -- every fetch 404s and the
+# install dies. Redirect to the archive and stop honouring the expired Release
+# validity window. Verified: each .deb that 404s on the mirror resolves 200
+# under archive.debian.org/debian-security.
+RUN set -eux; \
+    sed -i -e 's|https\?://deb\.debian\.org/debian-security|http://archive.debian.org/debian-security|' \
+           -e 's|https\?://deb\.debian\.org/debian|http://archive.debian.org/debian|' \
+           /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive; \
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
       gettext git libncurses5-dev libssl-dev rsync unzip zlib1g-dev file \
       wget curl subversion swig time xsltproc libelf-dev bc python3 python2 \

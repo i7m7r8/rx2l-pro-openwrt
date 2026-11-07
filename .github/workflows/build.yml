@@ -52,11 +52,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/build:rw \
             -w /build \
-            -e HOME=/github-home \
-            owrt-rx2lpro bash -c '
-              mkdir -p /github-home && export HOME=/github-home &&
-              ./build.sh
-            '
+            owrt-rx2lpro ./build.sh
 
       - name: Record what was produced
         run: |
