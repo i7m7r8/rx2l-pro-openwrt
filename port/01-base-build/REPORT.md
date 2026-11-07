@@ -246,3 +246,49 @@ the only misses.
 * **orchestrator** — `feeds.conf`'s "master dropped cgi-io / miniupnpd does not resolve"
   story is now false on this pin and `feeds.conf.new` says so; the 19.07 branches are gone
   from the picture entirely.
+
+## 6.18 API compatibility: checking it exhaustively instead of by grep
+
+Two kernel-stage builds failed with no compiler error in CI (the capture bug is
+fixed separately). Rather than guess, each struct the driver initialises was
+compared field-by-field against the **real 6.18 headers**, pulled from
+`torvalds/linux` at tag `v6.18`:
+
+```sh
+curl -sL -o cfg618.h  https://raw.githubusercontent.com/torvalds/linux/v6.18/include/net/cfg80211.h
+curl -sL -o netdev618.h https://raw.githubusercontent.com/torvalds/linux/v6.18/include/linux/netdevice.h
+# then: parse `struct X_ops { ... };`, collect the `(*field)` names, and diff them
+# against the `.field =` initialisers in the driver after dropping `#if 0` blocks
+```
+
+That found **three** certain compile errors in `8192cd_cfg80211.c`, which is one
+file and only the first the compiler reaches:
+
+| driver line | problem | 6.18 reality |
+|---|---|---|
+| 7279 | `.mgmt_frame_register = ...` | removed in 6.9; replaced by `.update_mgmt_frame_registrations` |
+| 7270 | `.set_wds_peer = ...` | removed; no replacement |
+| 6162 | `cfg80211_ch_switch_notify(dev, &chdef)` | takes `(dev, chandef, link_id)` since 6.9 |
+
+All three are fixed by `files/compat/6.18/910-rtl8192fe-cfg80211-6.18.patch`,
+which `build.sh` applies right after `files/` is copied over the overlay (those
+sources are not in the tree when `patches-6.18/` is applied, so a normal kernel
+patch cannot reach them) and which fails the build loudly if it stops applying.
+
+The check is **complete for that struct**, not sampled: after the patch, all 45
+active initialisers resolve in the 6.18 `cfg80211_ops`; the other 21 are inside
+`#if 0`. The same method says the Ethernet driver is clean — its
+`net_device_ops` initialises 7 fields and every one exists in 6.18.
+
+### What this predicts about the rest
+
+The overlay is genuinely 6.18-ported where it matters: it ships
+`compat_legacy_timer.h` specifically to carry the pre-4.15 timer API onto 6.18,
+uses `ktime_get_real_ts64` instead of the removed `do_gettimeofday`, and guards
+`dev->trans_start` (kernel < 3.13) and `skb->nh.raw` (kernel < 2.6.22) so neither
+is compiled here. The three fields above are the ones the port missed.
+
+Anything the compiler finds next is a *different* class of problem -- argument
+counts and types inside function bodies, which a struct diff cannot see. If the
+next build fails, the diagnostics now print the error and the fix should be
+applied the same way: a named patch under `files/compat/6.18/`.
