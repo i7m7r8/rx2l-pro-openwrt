@@ -11,6 +11,42 @@ that decrypts to 12,106,836 bytes, SHA-256
 
 ---
 
+## Readable form
+
+The same functions decompiled to C by Ghidra 12.1.4 are in
+[`ghidra/decry-firm.c`](ghidra/decry-firm.c). What they show, in the source's own
+shape:
+
+```c
+/* main */
+if (argv[2] && access(argv[2], 0) == 0) unlink(argv[2]);      /* clear stale flag */
+rc = decrypt_firmware(argv[1]);
+if (rc == 0) return 0;
+puts("openssl decode failed");
+if (argv[2]) { fd = creat(argv[2], 0777); if (fd >= 0) close(fd); }   /* record it */
+return -1;
+
+/* decrypt_firmware */
+fstat(fd, &st);  if (!S_ISREG(st.st_mode)) -> "get ori stat failed!"
+map = mmap(0, st.st_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+pass = get_aes_pass();                                   /* RSA-public-decrypt .data */
+sig2 = decrypt_signed_digest(map + 0x004, &len2);        /* OUTER signature block  */
+if (verify(map + 0x204, size - 0x204, sig2, len2))       /* over the ciphertext    */
+    -> "signed2 HASH failed!"
+aes_cbc_decrypt(map + 0x204, size - 0x204, pass, 0x40, map, &len);   /* in place   */
+sig1 = decrypt_signed_digest(map, &len1);                /* INNER signature block  */
+pad  = map[len - 1];
+if (verify(map + 0x200, (len - 0x200) - pad, sig1, len1))  /* over the payload     */
+    -> "signed2 HASH failed!"
+memcpy(map, map + 0x200, len - 0x200);  ftruncate(fd, len);          /* strip hdr  */
+return 0;
+```
+
+Two things this settles beyond the disassembly: the `S_ISREG` test is
+`fstat`/`0x8000` (not a header field, as one draft claimed), and the **inner**
+signature is the first 0x200 bytes of the decrypted stream while the **outer** one
+sits at file offset 0x004.
+
 ## 0. Verdict up front
 
 **NO for attacker-chosen content. A hand-built file cannot make `decry_firm`
