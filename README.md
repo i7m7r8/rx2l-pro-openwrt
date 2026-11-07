@@ -93,43 +93,50 @@ the exact offset first, then the aligned one, then scan
 
 ## Install paths — read this before touching a router
 
-**The webui's "Local Upgrade" cannot take our image.** `/bin/decry_firm`
-verifies an **RSASSA-PKCS1-v1_5 with SHA-512 signature over the entire AES
-payload** of the uploaded `TDE01` container, using a 4096-bit public key
-embedded in the binary (modulus at `.rodata 0x41cd00`, `e = 65537` at
-`.data 0x42f940`). Verified: `pow(sig, 65537, N)` yields the `00 01 FF FF…`
-DigestInfo prefix. There is no plaintext pass-through — every probe (header
-present, signature zeroed, truncated input) fails with `get signed_digest
-failed`. Without Tenda's private key, a webui-uploadable file is not
-producible. `/proc/km/km_upgrade_ignore_kernel_sig` is mode `0440` and is not a
-bypass.
+**The webui's "Local Upgrade" can take our image — because it throws away the
+signature verdict.** `/bin/decry_firm` does verify an **RSASSA-PKCS1-v1_5 with
+SHA-512 signature over the entire AES payload** of a `TDE01` container with a
+4096-bit public key embedded in the binary (modulus at `.rodata 0x41cd00`,
+`e = 65537` at `.data 0x42f940`); `pow(sig, 65537, N)` yields the `00 01 FF FF…`
+DigestInfo prefix, and no modified or self-built file can pass it. What we missed
+until now is that **passing it is not required**: `libgo.so`'s `upgrade()` handler
+runs `decry_firm /var/image /tmp/UPGRADE_DECRY_FAIL_FLAG` and then never looks at
+the return value. It only requires that `/var/image` still exists, that
+`check_fw()` accepts its *format*, and then it flashes it. Proven offline on the
+stock binary under qemu: fed a plaintext image, `decry_firm` fails (`rc=255`),
+touches the flag file, and leaves the bytes **identical** (sha256 checked
+before/after). Full chain, evidence addresses and the remaining unknowns:
+[`notes/webui-upgrade-contract.md`](notes/webui-upgrade-contract.md).
 
-What actually installs OpenWrt here, in the order you should try it:
+`check_fw` → `check_fw_type` / `check_fw_valid` / `check_fw_crc` /
+`check_mtd_size` (all in `lib/libcommon.so`) contain **no** RSA or
+`EVP_DigestVerify` call at all: they check header shape, sizes, `fw_type`,
+`fw.product.id` and the payload CRC32 — i.e. the same fields
+`*-tenda-plaintext.bin` already reproduces byte-exactly from a genuine vendor
+image. So the artifact that the webui accepts is the **plaintext** container, not
+a `TDE01` file, and we build it by editing a real RX2L Pro image's payload +
+length + CRC rather than by trying to forge anything.
+
+Install paths, in the order to try them:
 
 1. **RAM boot (no flash write, always safe).** `*-initramfs-kernel.bin`, loaded
    through the Realtek loader shell (`<RealTek>` prompt: `LOADADDR`, `XMOD`,
-   `IPCONFIG`). Serial cable required. Nothing is persisted; a power cycle
-   returns you to stock.
-2. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP. Writes flash, so
-   take the dumps in *Recovery* first.
-3. **Vendor `tendaupgrade` from a root shell.** The stock contract is
-   `tendaupgrade <fwtype> <1|0> /var/image` (called from `libcommonprod.so`),
-   where `/var/image` holds a file shaped like the output of `decry_firm` —
-   that is exactly what `*-tenda-plaintext.bin` is: the cr6c container behind
-   the 64-byte Tenda plaintext header (lengths + payload CRC32, byte-exact
-   against vendor samples). Whether `tendaupgrade` itself re-verifies anything
-   is the open question; the container it produces and the geometry it expects
-   are fully documented above.
-4. **Direct MTD write of `*-factory-cr6c.bin`** to `mtd3` from a root shell —
-   the fallback, and the most explicit.
+   `IPCONFIG`) — see *First-boot risk checklist* below. Serial cable required.
+   Nothing is persisted; a power cycle returns you to stock.
+2. **Webui "Local Upgrade" with `*-tenda-plaintext.bin`.** One `KernelFS` write
+   done by the vendor's own flasher. Fresh squashfs = pristine default config,
+   which is the factory-reset behaviour you want; the `CFG` partition is never
+   touched because our port reads the MAC and RF calibration out of it.
+3. **Vendor `tendaupgrade` from a root shell.** Same contract as path 2 but
+   invoked directly: `tendaupgrade <fwtype> <1|0> /var/image`.
+4. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP, or **direct MTD
+   write** to `mtd3` from a root shell — the explicit fallbacks.
 
-⚠ **Open question that changes the recommendation above:** `xmesh` and
-`libcommonprod.so` call `tendaupgrade` while containing **zero** references to
-`decry_firm`, and `libgo.so` exposes `formAgentLocalUpgrade` /
-`formIgnoreUpgrade`. If any of those channels reaches the flasher without the
-RSA verifier, a webui-reachable path exists after all. That investigation is in
-flight; this README will say so plainly when it lands. Until then, treat paths
-1–4 as the plan.
+⚠ Before any of 2–4 runs on hardware, the four `check_fw_*` comparisons must be
+read byte-for-byte (in progress) so that the image we generate is *known* to
+return 0 from `systool_upgradefile_handle`, and we must confirm that no other
+daemon that reads `UPGRADE_DECRY_FAIL_FLAG` (`business_proc`, `netctrl`, `cwmpd`)
+vetoes or rolls the flash back. Paths 1 is unaffected by either question.
 
 ## First-boot risk checklist
 
