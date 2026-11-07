@@ -186,3 +186,42 @@ a calibrated radio and one running on the driver's built-in tables.
 
 Values themselves are per-unit and are not reproduced here beyond the two that a
 range check needs.
+
+## 9. `image_boot` is dead weight — nothing reads it
+
+`tendaupgrade` runs `env set image_boot 1 unlock` after a successful flash
+(found in its strings at 0x4037c0). That looked like an A/B bookkeeping step that
+a flashing procedure must respect. It is not: the only artifacts in this firmware
+that mention the key at all are
+
+* `bin/env` — a U-Boot-style environment editor (`env_htab`, `himport_r`,
+  `crc32`, `mtd_open`, `erase_mtd`) whose **default environment template** is
+
+  ```
+  image_boot=0
+  image0_stats=0
+  image1_stats=0
+  ipaddr=192.168.1.1
+  netmask=255.255.255.0
+  serverip=192.168.1.99
+  ```
+
+  and
+* `bin/tendaupgrade` — which sets it.
+
+Searched for all three keys in: the decompressed stage-1 loader (229,584 bytes),
+the stock 4.4.176 kernel image, every script under `/etc_ro` and `/etc`, and the
+flash dumps themselves. **No hits.** The live environment in mtd1 (`0x2f004`)
+contains only `disaster_web=1`, `ipaddr`, `netmask`, `serverip` — `image_boot` is
+not even present.
+
+So the flag is vestigial on this firmware: a bootloader version that consumed it
+is not the one in this flash image, and nothing else looks at it. Two practical
+consequences:
+
+* a flashing procedure for this port does **not** need to reproduce
+  `env set image_boot 1`, and cannot brick the unit by omitting or clearing it;
+* the vendor's "unlock" is likewise not a security gate on this build.
+
+The env editor itself is still relevant for recovery — `bin/env` is the tool that
+writes the same 4-key environment the loader's disaster-web path reads.
