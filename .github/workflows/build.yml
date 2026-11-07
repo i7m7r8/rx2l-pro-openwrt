@@ -56,11 +56,19 @@ jobs:
       - name: files/ carries nothing a 6.18 tree cannot use
         run: |
           rc=0
-          # 1. No kernel-version-pinned material in the build overlay.
-          stale=$(find files -maxdepth 6 \( -name 'files-*.*' -o -name 'patches-*.*' \
-                    -o -name 'config-[0-9]*' \) -print 2>/dev/null)
+          # 1. No kernel-version-pinned TREES in the build overlay.
+          #    files-<ver>/ and patches-<ver>/ are whole 4.14-era layers that
+          #    would be copied in and silently ignored (or worse, partially
+          #    matched); they belong under port/, where they cannot shadow
+          #    anything. A single config-<ver> file is legitimate -- it is how a
+          #    subtarget enables the symbols its own board needs -- but only for
+          #    the kernel this port actually builds (6.18, from the platform
+          #    overlay's KERNEL_PATCHVER). A config-4.14 is stale by definition.
+          stale=$(find files -maxdepth 8 \( -name 'files-*.*' -o -name 'patches-*.*' \
+                    -o -name 'config-[0-9]*' \) -print 2>/dev/null | grep -v '/config-6\.18$')
           if [ -n "$stale" ]; then
-            echo "!!! kernel-versioned material inside files/ (belongs under port/):" >&2
+            echo "!!! kernel-versioned material inside files/ (belongs under port/," >&2
+            echo "    or is pinned to a kernel this port does not build):" >&2
             echo "$stale" >&2
             rc=1
           fi
