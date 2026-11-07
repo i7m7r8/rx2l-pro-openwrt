@@ -299,6 +299,37 @@ drv_rtl8192cd_setup() {
 		return 1
 	}
 
+	# Apply the same key/value pairs through the vendor MIB ioctl.
+	#
+	# The .dat file above is only read by the driver when
+	# CONFIG_RTL_COMAPI_CFGFILE is defined, and on this base it is not -- nor can
+	# it be enabled without porting: CfgFileProc() uses set_fs()/get_fs() and
+	# calls f_op->read directly (8192cd_comapi.c:3665-3688), all of which the
+	# kernel removed in 5.x. The platform's own answer to this is rtlmib
+	# (package/utils/rtlmib: the RTL_SET_MIB ioctl, i.e. what `iwpriv set_mib`
+	# used to be), so the same pairs are pushed through it.
+	#
+	# Applied AFTER the interface is up: the MIBs that matter for an AP (band,
+	# channel, ssid, encryption) are runtime settings, and the driver's own file
+	# reader also runs inside rtl8192cd_open(), i.e. at this point in the
+	# sequence.
+	if command -v rtlmib >/dev/null 2>&1; then
+		while IFS= read -r _line; do
+			case "$_line" in ''|\#*) continue ;; esac
+			_key=${_line%%=*}
+			_val=${_line#*=}
+			_dev=${_key%%_*}
+			_mib=${_key#*_}
+			[ -n "$_dev" ] && [ -n "$_mib" ] || continue
+			_val=${_val#\"}
+			_val=${_val%\"}
+			rtlmib "$_dev" set "${_mib}=${_val}" >/dev/null 2>&1 || \
+				echo "[rtl8192cd] rtlmib: $_mib on $_dev failed" >&2
+		done < "$CFGFILE"
+	else
+		echo "[rtl8192cd] rtlmib missing: radio runs on driver defaults" >&2
+	fi
+
 	for v in $_rtl_vifs; do
 		wireless_add_vif "${v%%:*}" "${v##*:}"
 	done
