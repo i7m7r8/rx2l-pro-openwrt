@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# RX2L Pro: renumber the generated switch VLANs 1/2 to the 9/8 the SoC-side
+# driver tags frames with, and move the interfaces onto the matching devices.
+#
+# WHY THIS EXISTS. board.d/02_network can only express roles through
+# ucidef_add_switch, and config_generate writes `option vlan` from the role's
+# sequence number (lan=1, wan=2) -- there is no syntax for "LAN is VID 9"
+# (bin/config_generate:244). The driver, however, hardcodes RTL_NASH_VID=9 and
+# RTL_WAN_VID=8 (drivers/net/ethernet/rtl819x_rtl819x_eth.c:54-55) and only
+# ever tags received frames with those two, so VLANs 1/2 would match nothing.
+# The platform's own uci-defaults/06_switch_vlan_ids does the same renumber for
+# its board; this is the RX2L Pro-gated equivalent.
+#
+# Runs once, on the freshly generated config, before interfaces come up.
+
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "tenda,rx2l-pro" ] || exit 0
+
+. /lib/functions.sh
+
+renumber() {
+	local sec="$1" vlan
+	config_get vlan "$sec" vlan
+	case "$vlan" in
+		1) uci set network."$sec".vlan='9' ;;
+		2) uci set network."$sec".vlan='8'
+		   uci set network."$sec".fid='1' ;;   # WAN keeps its own FID
+	esac
+}
+
+[ "$(uci -q get network.lan.device)" = "br-lan" ] || exit 0
+[ -n "$(uci -q get network.wan.device)" ] || exit 0
+
+config_load network
+config_foreach renumber switch_vlan
+
+# lan: the bridge carries eth0.1 -> eth0.9
+for sec in $(uci -q show network | sed -n "s/^network\.\([^.=]*\)=device$/\1/p"); do
+	[ "$(uci -q get network."$sec".name)" = "br-lan" ] || continue
+	uci -q del_list network."$sec".ports='eth0.1'
+	uci -q add_list network."$sec".ports='eth0.9'
+done
+
+# wan: device follows the renumbered VLAN
+old="$(uci -q get network.wan.device)"
+[ "$old" = "eth0.2" ] && uci set network.wan.device='eth0.8'
+[ -n "$(uci -q get network.wan6)" ] && uci set network.wan6.device='eth0.8'
+
+uci commit network
+
+exit 0

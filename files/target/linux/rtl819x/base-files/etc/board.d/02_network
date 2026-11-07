@@ -42,21 +42,27 @@ case $board in
     # or phyid maps to it, so it is left out: an unlabelled port that silently
     # joins the LAN bridge is worse than a port that does nothing.
     #
-    # VLAN IDs are 9/8, NOT the vendor's 1/2. The driver hardcodes 9/8
-    # (RTL_NASH_VID/RTL_WAN_VID) and its RX path only ever tags those two, so
-    # programming the switch for 1/2 would leave every frame unmatched. The
-    # reference board solves this with a boot-time renumber script
-    # (OVL uci-defaults/06_switch_vlan_ids); we emit the final IDs directly
-    # instead, so there is no window where the config is wrong and no extra
-    # script that can half-run.
+    # VLAN IDs: ucidef_add_switch cannot express 9/8. config_generate writes
+    # `vlan='$role'`, i.e. the ROLE's sequence number (lan=1, wan=2); the
+    # per-port index `"4:lan:9"` is parsed into the JSON and never read
+    # (package/base-files/files/bin/config_generate:244). So the stanza below
+    # produces VLANs 1/2 with devices eth0.1/eth0.2, and
+    # etc/uci-defaults/13_switch_vlans_rx2lpro renumbers them to the 9/8 the
+    # driver actually tags.
+    #
+    # That two-step is the platform's own pattern -- its
+    # uci-defaults/06_switch_vlan_ids does exactly this for its board, which is
+    # why that script exists at all. Ours is board-gated the same way, so the
+    # two never fight.
     ucidef_add_switch "switch0" \
-        "4:lan:9" "3:lan:9" "2:lan:9" "1:wan:8" "6t@eth0"
-    ucidef_set_interfaces_lan_wan "eth0.9" "eth0.8"
-    # WAN being reachable depends entirely on this switch config taking effect,
-    # so if the driver fails to probe the switch, both VLANs are absent and the
-    # board is reachable only over the 2.4 GHz AP or serial. That is the
-    # intended failure mode: a visibly dead Ethernet, never a silently bridged
-    # LAN/WAN (which loops).
+        "4:lan" "3:lan" "2:lan" "1:wan" "6t@eth0"
+    # LAN/WAN devices come from the switch stanza above (eth0.1/eth0.2) and are
+    # renamed by the renumber script; do not pin them here, or the two writes
+    # disagree.
+    #
+    # Failure mode if the switch driver fails to probe: no eth0.9/eth0.8, board
+    # reachable only over the 2.4 GHz AP or serial. That is the intended shape
+    # -- visibly dead Ethernet, never a silently bridged LAN/WAN.
     ;;
   *)
     # R3: this used to say "eth0" "eth1". There IS no eth1 on the DIR-842 R1 — the
