@@ -403,3 +403,29 @@ Ordering requirements, because this is the part that bites:
   verbatim exactly as stock did, so the driver's `INT_T` parser decides; but
   this is a two-way door and the verification in §4 must be done by reading
   the value back, not by trusting the pass-through.
+
+## Which apmib keys are per-unit, and which never reach the driver at all
+
+Compared this unit's CFG apmib (26 `HW_*` keys) with the vendor's shipped
+default, `/etc_ro/wlan/.wlan_rfhw.cfg` (49 keys):
+
+| | count | what |
+|---|---|---|
+| only in CFG | 5 | `HW_NIC0_ADDR`, `HW_WLAN{0,1}_WLAN_ADDR`, `HW_WLAN{0,1}_WSC_PIN` — the per-unit identity |
+| in both, same value | 5 | board constants |
+| in both, **different** value | 16 | the actual calibration: `HW_WLAN1_11N_XCAP`, `_THER`, `_THER_2`, the `TX_POWER_*` tables, TSSI and RX gain-gap entries |
+| only in the default file | 28 | `HW_RFE_TYPE_WLAN{0,1}`, `HW_RX_GAINGAP_*`, `HW_5G_BW40_1S_TSSI_*`, `HW_THERMAL_*` … |
+
+Two consequences:
+
+* `rfhw-convert` is right to read **CFG only**. The per-unit values it needs are
+  all there, and the 16 differing entries are exactly the ones a factory
+  calibration writes; taking them from the default file would undo the unit's
+  calibration.
+* `HW_RFE_TYPE_WLAN1` is **not** in this unit's CFG. The vendor's boot only copies
+  the default file when the apmib reads blank (`grep HW_XCAP_WLAN0_AX`), and this
+  one is not blank, so the RFE type never reaches the driver on this unit and it
+  runs on its built-in default — which is what our port does too, since we do not
+  read the key either. That is consistency with stock, not an omission: if a
+  later unit *does* carry an RFE override, adding `rfe_type` to `rfhw-convert`
+  is a one-line change against a value already in the apmib.
