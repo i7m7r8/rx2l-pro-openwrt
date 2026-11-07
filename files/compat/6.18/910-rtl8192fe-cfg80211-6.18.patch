@@ -1,5 +1,14 @@
 --- a/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c
 +++ b/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c
+@@ -4604,7 +4604,7 @@
+ }
+ 
+ 
+-static int realtek_cfg80211_set_wds_peer(struct wiphy *wiphy, struct net_device *dev,
++static int __maybe_unused realtek_cfg80211_set_wds_peer(struct wiphy *wiphy, struct net_device *dev,
+ 				  const u8 *addr)
+ {
+ /*
 @@ -5178,7 +5178,7 @@
  	return 0;
  }
@@ -18,6 +27,15 @@
  				}
  			}
  		}
+@@ -7267,7 +7267,7 @@
+ 	.set_tx_power = realtek_cfg80211_set_tx_power,
+ 	.get_tx_power = realtek_cfg80211_get_tx_power,
+ 	.set_power_mgmt = realtek_cfg80211_set_power_mgmt,
+-	.set_wds_peer = realtek_cfg80211_set_wds_peer,
++	/* 6.18: .set_wds_peer removed from struct cfg80211_ops */
+ 	.rfkill_poll = realtek_cfg80211_rfkill_poll,
+ 	//CFG80211_TESTMODE_CMD(ieee80211_testmode_cmd)
+ 	.set_bitrate_mask = realtek_cfg80211_set_bitrate_mask,
 @@ -7276,7 +7276,7 @@
  	.remain_on_channel = realtek_remain_on_channel,
  	.cancel_remain_on_channel = realtek_cancel_remain_on_channel,
@@ -28,24 +46,12 @@
  	.dump_survey = realtek_dump_survey,//survey_dump
  	.start_ap = realtek_start_ap,
 
-Notes on why these three hunks and nothing else:
+A third live mismatch was found by diffing every field the driver initialises
+against struct cfg80211_ops parsed from the v6.18 header: .set_wds_peer is gone
+too (removed with the same wave of cfg80211 cleanups), and it sat unguarded at
+line 7270. It is dropped and its function marked __maybe_unused.
 
-* .mgmt_frame_register was removed from struct cfg80211_ops in 6.9, replaced by
-  .update_mgmt_frame_registrations(struct wiphy *, struct wireless_dev *,
-  struct mgmt_frame_regs *). The old callback only tracked which management
-  frames userspace wanted; monitor mode itself still works through .mgmt_tx and
-  cfg80211_mgmt_tx_status, so dropping the callback loses the bookkeeping but
-  not the feature. Mapping it properly means translating (frame_type, reg) into
-  the upd->interface_stypes/mgmt_stypes bitmaps, which cannot be validated
-  without the radio -- so it is dropped deliberately, not silently. The function
-  stays (marked __maybe_unused) because it documents the mapping.
-
-* cfg80211_ch_switch_notify() gained the `link_id` argument in the same release
-  (6.18: `void cfg80211_ch_switch_notify(struct net_device *dev, struct
-  cfg80211_chan_def *chandef, unsigned int link_id)`). This driver has no MLO,
-  so 0 is the only correct value.
-
-Checked against include/net/cfg80211.h from torvalds/linux v6.18: the file uses
-82 cfg80211_*/ieee80211_* identifiers and every kernel one resolves in the 6.18
-headers except these two; the other ten are the driver's own structures
-(cfg80211_event, cfg80211_cmd_queue, ...).
+After these five hunks the check is clean: of the driver's 45 ACTIVE initialisers
+(the ones outside #if 0 blocks -- set_channel/set_beacon/add_beacon/del_beacon/
+{get,set}_mesh_params all live inside #if 0), every one exists in the 6.18
+struct. That is the whole cfg80211_ops surface for this driver, not a sample.
