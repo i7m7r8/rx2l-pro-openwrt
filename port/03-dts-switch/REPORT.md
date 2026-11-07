@@ -198,3 +198,40 @@ safe state: line 58 (H2) is the switch's `~RESET` and is two bits away from
    suppresses the split. Also re-decide `spi-max-frequency` (I used 15 MHz,
    the value proven on the identical `spi-sheipa` divider in base A; our own
    4.14 tree says 41 MHz).
+
+## Update: the switch driver was not merely unwired, it was unbuildable
+
+Item 3 above said "copy that header next to rtl8367b.c and make sure the
+RTL8367B_PHY Kconfig/Makefile hunks exist". Measured against the pinned overlay
+tree, the hole was wider than the header:
+
+* `files-6.18/drivers/net/phy/` ships `rtl8367b.c`, `rtl8366_smi.c`,
+  `rtl8366_smi.h` and **no header, no Makefile, no Kconfig**;
+* nothing in `patches-6.18/` mentions `rtl8367b` at all, so no patch adds the
+  `obj-$(CONFIG_RTL8367B_PHY)` line or a Kconfig entry;
+* `CONFIG_RTL8367B_PHY=y` sits in `rtl8197f/config-6.18`, but an unknown symbol
+  is dropped by kconfig without an error.
+
+Net effect: the switch driver was **never compiled** on this base. The three
+source files were copied into the kernel tree and ignored, the config line
+selected nothing, and the RTL8367RB would come up in its power-on state -- the
+"dead Ethernet" symptom, not a missing feature.
+
+Fixed in this tree, additively (nothing under the platform overlay is edited):
+
+| path | what it supplies |
+|---|---|
+| `files/target/linux/rtl819x/files-6.18/drivers/net/phy/rtl8367.h` | the header `rtl8367b.c` quote-includes; types/enums only, taken from an OpenWrt-lineage tree (GPL-2.0, `_RTL8367_H`) |
+| `files/target/linux/rtl819x/patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch` | `obj-$(CONFIG_RTL8367B_PHY) += rtl8367b.o rtl8366_smi.o` plus the Kconfig entry that makes the symbol exist |
+| `rtl8197f/config-6.18` | drops `CONFIG_RTL8366_SMI{,_DEBUG_FS}`, which no Kconfig defines either; the objects ride on the RTL8367B_PHY line |
+
+The patch's context is the real `drivers/net/phy/{Makefile,Kconfig}` of Linux
+6.18 (the pinned `LINUX_VERSION-6.18 = .41`) and it dry-runs clean against them.
+`CONFIG_SWCONFIG` (the Kconfig dependency) is a genuine symbol here -- OpenWrt's
+`generic/hack-6.18/700-swconfig_switch_drivers.patch` defines it -- so the chain
+is SWCONFIG=y -> RTL8367B_PHY available -> objects built.
+
+Still open, and unchanged by this: the port map itself (items 4 and 5 above), so
+`02_network` still does not emit a `switch0` stanza. First boot must therefore be
+treated as "switch in power-on state": reachability via the 2.4 GHz AP or serial,
+not via a presumed LAN jack.
