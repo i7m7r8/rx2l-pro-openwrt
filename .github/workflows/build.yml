@@ -118,6 +118,47 @@ jobs:
             }
           '
 
+      # A DTS partition label is not cosmetic: the kernel splitter only runs on
+      # a partition named CONFIG_MTD_SPLIT_FIRMWARE_NAME, and platform.sh writes
+      # PART_NAME=firmware. Rename the node and the image flashes fine and then
+      # dies at "Unable to mount root fs on unknown-block(0,0)" -- a class of
+      # failure no compile can catch. Same for a config that forgets to enable
+      # the splitter at all.
+      - name: DTS + kernel-config invariants that only fail on hardware
+        run: |
+          rc=0
+          dts=files/target/linux/rtl819x/dts/rtl8197f_tenda_rx2lpro.dts
+          [ -f "$dts" ] || { echo "!!! $dts missing" >&2; exit 1; }
+
+          # 1. the container partition must be named "firmware"
+          if ! grep -q 'label = "firmware";' "$dts"; then
+            echo "!!! $dts has no partition labelled \"firmware\" -- mtdsplit" >&2
+            echo "    will not run and mount_root will find no rootfs" >&2
+            rc=1
+          fi
+          # 2. ...and the vendor name must not come back
+          if grep -q 'label = "KernelFS";' "$dts"; then
+            echo "!!! vendor label KernelFS used for the container partition" >&2
+            rc=1
+          fi
+          # 3. no root= in bootargs: the root device comes from the splitter
+          if sed -n '/chosen {/,/};/p' "$dts" | grep -q 'bootargs.*root='; then
+            echo "!!! chosen/bootargs pins root=; OpenWrt finds rootfs via mtdsplit" >&2
+            rc=1
+          fi
+          # 4. the splitters must be enabled, and the rootfs_data one with them
+          kcfg=files/target/linux/rtl819x/rtl8197f/config-6.18
+          for sym in CONFIG_MTD_SPLIT_CVIMG_FW CONFIG_MTD_SPLIT_SQUASHFS_ROOT; do
+            grep -qx "${sym}=y" "$kcfg" 2>/dev/null || {
+              echo "!!! ${sym}=y missing from $kcfg" >&2; rc=1; }
+          done
+          # NOTE: $kcfg is a whole-file override of the overlay's subtarget
+          # config, so an overlay update to that file lands under ours. build.sh
+          # prints every such override ("files/ overrides overlay file: ...");
+          # re-sync it when the overlay's copy changes.
+          [ $rc -eq 0 ] && echo "DTS and splitter config agree with the upgrade path"
+          exit $rc
+
   # The real build. Debian 13 (trixie) container because the base is current
   # upstream: kernel 6.18.41, python3.13 host tools, no python2 anywhere.
   #

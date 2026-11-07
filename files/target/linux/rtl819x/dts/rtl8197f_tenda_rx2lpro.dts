@@ -524,8 +524,28 @@
 			 * after it. Single bank -- stock has no KernelFS1/2,
 			 * so there is no dual-bank rollback.
 			 */
+			/* NOTE: the vendor calls this partition "KernelFS"
+			 * (mtd3, 0x40000..0xfc0000) and its own flasher
+			 * resolves it by that name. Here it must be
+			 * "firmware", and two independent consumers enforce
+			 * it:
+			 *   - the kernel splitter runs only on a partition
+			 *     whose name equals
+			 *     CONFIG_MTD_SPLIT_FIRMWARE_NAME, which is
+			 *     "firmware" in the generic config. Miss it and
+			 *     nothing is split, mount_root finds no rootfs,
+			 *     and boot dies at "Unable to mount root fs on
+			 *     unknown-block(0,0)";
+			 *   - base-files/lib/upgrade/platform.sh sets
+			 *     PART_NAME=firmware and writes sysupgrade there.
+			 * Renaming it here without changing BOTH of those is
+			 * a silent brick, not a cosmetic change. The install
+			 * path in notes/install-runbook.md uses the vendor
+			 * flasher on the STOCK system, where the name is
+			 * still KernelFS, so nothing there is affected.
+			 */
 			partition@40000 {
-				label = "KernelFS";
+				label = "firmware";
 				reg = <0x040000 0xf80000>;
 			};
 
