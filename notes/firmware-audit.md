@@ -166,3 +166,23 @@ non-standard beyond the magic; the fragment table does not decode. Consequences:
   we control the whole pipeline on our side, and the vendor's format is a trap.
 
 Recorded as an observation, not a blocker: nothing in the port reads mtd4.
+
+## 8. The per-unit calibration data, validated against the driver's own conditions
+
+The apmib records in mtd2 are not opaque blobs; two of them can be checked against
+the code that consumes them.
+
+| key | value | check |
+|---|---|---|
+| `HW_WLAN1_11N_XCAP` | **45** | the driver latches xcap only when `0 < xcap < 0x3F` (`8192cd_hw.c:8802`) and programs BB `0x2C` bits 12-23 with it. 45 is inside the window, so this unit's crystal trim will be applied, not ignored. |
+| `HW_WLAN1_TX_POWER_CCK_A` | 28 hex chars | 14 bytes = 14 channels — the 2.4 GHz rate table, exactly the length `rfhw-convert` expects. A 13- or 15-entry table would have been silently truncated or padded. |
+| `HW_WLAN1_TX_POWER_HT40_1S_A` | 28 hex chars | same, HT40 1-stream table |
+| `HW_WLAN1_WLAN_ADDR` | 12 hex chars | the per-unit 2.4 GHz MAC the driver would otherwise replace with `rtk_fake_addr` |
+| `HW_XCAP_WLAN0_AX` | 53 | the 5 GHz/AX trim — present, but nothing in this port applies it (no 8832 driver) |
+
+So the calibration store is well-formed for group 1 and the values are in range;
+applying them (the `rfhw-convert` path added this round) is the difference between
+a calibrated radio and one running on the driver's built-in tables.
+
+Values themselves are per-unit and are not reproduced here beyond the two that a
+range check needs.
