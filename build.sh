@@ -306,6 +306,33 @@ make defconfig
 # BASE_REV + overlay; if a track renames the device profile, update this list
 # with it (port/README.md: track 01 owns the seed).
 rc=0
+# When a symbol goes missing, say WHY. kconfig drops a package without a word,
+# and the reason is always in its own DEPENDS line or in the resolved state of
+# one of those dependencies -- both of which cost nothing to print here and cost
+# a 4-minute CI round trip to discover otherwise.
+why_dropped() {
+	pkg="${1#CONFIG_PACKAGE_}"; pkg="${pkg%=y}"
+	mk="$(grep -rl --include=Makefile -E "^ *define Package/${pkg}\$" \
+		package feeds 2>/dev/null | head -1)"
+	if [ -n "$mk" ]; then
+		echo "    defined in: $mk" >&2
+		awk -v p="define Package/${pkg}" '
+			index($0,p){f=1}
+			f && /DEPENDS/ {print "    "$0; exit}
+			f && /^endef/ {exit}' "$mk" >&2
+		# and the resolved state of each dependency we can name
+		for dep in $(awk -v p="define Package/${pkg}" '
+				index($0,p){f=1}
+				f && /DEPENDS/ {gsub(/[+:=]|@|\|\||&&|\(|\)/," ");print;exit}
+				f && /^endef/ {exit}' "$mk" 2>/dev/null); do
+			grep -qE "^(# )?CONFIG_PACKAGE_${dep}(=| is not set)" .config \
+				&& grep -E "^(# )?CONFIG_PACKAGE_${dep}(=| is not set)" .config \
+				| sed 's/^/    dep /' >&2
+		done
+	else
+		echo "    no Makefile in this tree defines Package/${pkg}" >&2
+	fi
+}
 for sym in \
 	"CONFIG_TARGET_rtl819x_rtl8197f=y" \
 	"CONFIG_PACKAGE_luci=y" \
@@ -313,7 +340,11 @@ for sym in \
 	"CONFIG_PACKAGE_firewall4=y" \
 	"CONFIG_PACKAGE_wifi-scripts=y"
 do
-	grep -qx "$sym" .config || { echo "!!! defconfig did not keep $sym" >&2; rc=1; }
+	grep -qx "$sym" .config || {
+		echo "!!! defconfig did not keep $sym" >&2
+		why_dropped "$sym"
+		rc=1
+	}
 done
 grep -q '^CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_' .config || {
 	echo "!!! no DEVICE_* profile selected - the image recipe (track 02/03) and" >&2
