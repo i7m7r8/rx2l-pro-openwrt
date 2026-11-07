@@ -30,13 +30,17 @@ gate from us.
 `text 0x402388` (`main`, static uClibc binary, no symbols — addresses are file
 addresses, base `0x400000`):
 
-* `argc` must be **4** (`0x40243c`: `addiu $v0,$zero,4; bne`). With `argc != 4`
-  the path silently defaults to `/var/image` and the reboot flag is left
-  uninitialised — do not rely on that; pass all four arguments.
-* `argv[1]` → `atoi` → fw type, range-checked `0..6` in `main` (`0x40255c`
-  `slti 7`) and then again inside the worker, which rejects the rest with
-  `fw type is not support.` Empirically the value that drives a single-image
-  `KernelFS` write is **2** (probe result recorded in `FACTS.md`).
+* `argc` may be **4** or **2**. Ghidra's decompilation of `main` shows
+  `if ((argc == 4) || (argc == 2))`: with 4 it takes the path from `argv[3]` and
+  the reboot flag from `argv[2]` (which must parse as 0 or 1); with 2 it uses
+  `/var/image` and a reboot flag of **1**. Any other count returns -1. An earlier
+  version of this file said "must be 4" and "the reboot flag is uninitialised" --
+  both wrong; the flag defaults to 1.
+* `argv[1]` → `atoi` → fw type. `main` range-checks `0..6` (`0x40255c`,
+  `slti 7`), but the decompiled worker (`FUN_00401fdc`) then requires
+  **`param_2 == 2`** exactly and logs `fw type is not support.` otherwise. So
+  **2 is the only value that flashes**, and the 0..6 window is only a coarse
+  filter -- which is what the earlier probe had observed empirically.
 * `argv[2]` → `atoi` → must be `0` or `1` (`0x4024d8` compares against 1,
   `0x402510` returns -1 otherwise). Non-zero means **reboot after writing**.
 * `argv[3]` → the image path, copied with a `0x40`-byte limit (`0x402464`
@@ -76,11 +80,23 @@ rejected with `errCode=1`, the symlink was not in place when `check_fw` ran.
 ### What the flasher does with the 64-byte header
 
 Both routes hand it the **plaintext** artifact (64-byte Tenda header + `cr6c`
-container), and it does not write those 64 bytes to flash: the write path seeks
-past them first (`tendaupgrade@0x4018c4: addiu $a1,$zero,0x40` immediately before
-the seek/write helper at `0x4027e4`). The partition therefore ends up starting
-with `cr6c` at offset 0, which is what the boot loader reads and what the stock
-`mtd3` dump looks like.
+container), and the flash itself proves the header does not land in the
+partition: this unit's `mtd3` starts with `cr6c` at offset 0, while `/var/image`
+(what `decry_firm` writes) starts with the uImage magic `27 05 19 56`. So the
+flasher skips the 64 bytes somewhere.
+
+**How** it skips them is not established. An earlier version of this file named
+`tendaupgrade@0x4018c4 (addiu $a1,$zero,0x40)` as a seek; Ghidra's decompilation
+of the write path (`FUN_00401904`) instead shows a plain
+`while (read(image_fd, buf, 0x10000) > 0) write(mtd_fd, buf, n)` loop, i.e. from
+offset 0, and the helper that the `0x40` is passed to decompiles to ABI/thunk
+noise. Neither reading can be trusted without the device, and the two disagree.
+
+What is safe to act on: hand the flasher the **plaintext** artifact (it is what
+the vendor's own webui feeds it, and what `check_fw` inspects), and verify
+`/proc/mtd` plus the first four bytes of `mtd3` afterwards. If the partition
+starts with `27 05 19 56` instead of `cr6c`, the header was *not* stripped and the
+image must be re-flashed from the bare container -- do not reboot in that state.
 
 Consequence for the size budget: the file handed to the flasher is 0x40 bytes
 larger than what lands in `KernelFS`, and `check_fw`'s `check_mtd_size` sees the
