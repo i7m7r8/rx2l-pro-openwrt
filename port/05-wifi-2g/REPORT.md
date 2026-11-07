@@ -169,3 +169,29 @@ flash; `xcap`/`pwrlevel*`/`rfe` are driver MIB keys) are things a rebuild can
 contradict but not argue with. The staged rfhw-convert and the rewritten
 uci-defaults: written but **unexecuted**, and B1 is a genuine coin-flip that
 only CI settles.
+
+## Verification pass on the 6.18 base (2026-11-07 evening)
+
+Checked, against the pinned overlay tree, that the pieces this track depends on
+are actually present and agree with each other. Everything below was read, not
+assumed — and two of the five would have produced a radio that never appears.
+
+| link in the chain | evidence | verdict |
+|---|---|---|
+| HAL compiled | `config-6.18` sets `WLAN_HAL=y`, `WLAN_HAL_88XX=y`, `WLAN_HAL_8197F=y`, `RTL8192FE_RX23302=y`, `WEXT_*` | ✔ |
+| HAL wired into the kernel build | `patches-6.18/737-wlan-rtl8192fe.patch` adds `obj-$(CONFIG_RTL8192FE_RX23302) += rtl8192fe/` to `drivers/net/wireless/Makefile` — the config symbol is real, unlike the switch driver's | ✔ |
+| HAL source present | `files-6.18/drivers/net/wireless/rtl8192fe/` | ✔ |
+| netifd can find the netdev by identity | HAL does `proc_mkdir(dev->name, NULL)` (`8192cd_proc.c:10320`) and creates `mib_all` under it, which is exactly what `rtl_find_phy()` probes (`/proc/<if>/mib_all`) | ✔ |
+| the config file the handler writes is the one the HAL reads | handler writes `/etc/Wireless/RTL8192CD.dat`; HAL's `CFG_FILE_PATH` is the same string (`8192cd_comapi.c:3614`) | ✔ |
+
+Also added to the shipped handler: `drv_rtl8192cd_init_vlan_config()` and
+`drv_rtl8192cd_init_station_config()` as no-ops. netifd calls them by name for
+vlan/station stanzas; the platform's own handler for this SoC defines both, ours
+did not, so such a stanza would have died on an undefined function.
+
+Still unverifiable without hardware (unchanged): whether our uci option names
+(`band` as a bitmask, `htmode`, `led_type`) mean the same thing to the 6.18 HAL
+as they did to the 4.14 vendor driver. The two handlers in play — ours and the
+platform's 527-line one — read different option sets, and this tree keeps ours
+because it is paired with `uci-defaults/12_wireless-2g-rx2lpro`. Deciding
+between them needs one boot with `wifi up` and a look at the radio.
