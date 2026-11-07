@@ -112,9 +112,16 @@ There is **no `wan_mac` key** — confirming that the WAN MAC is derived, and ou
 ## 5. The partitions the port must never write
 
 * **mtd5 CFM** and **mtd6 CFM_BACKUP** are the vendor's running config
-  (1,209 printable key/value strings). They **differ in 645 bytes** — the
-  "backup" is not a copy, so treating either as disposable would lose settings
-  the other does not hold.
+  (1,209 printable key/value strings). They **differ in 645 bytes**, and the
+  difference is now pinned down: both parse to **1,208 key/value pairs with
+  identical values** — the bytes differ because the keys are serialised in a
+  different order (live starts at `adv.iptv.stballvlans=`, the backup at
+  `steerd.ess=...`) and because the 4-byte header at offset 0 differs
+  (`6c317feb` vs `99e828f3`, evidently a checksum/version). So the backup is a
+  full copy of the same configuration, not a stale or partial one. It is still
+  not disposable: a reflash that writes one and not the other leaves two
+  different serialisations, and only the vendor's tool knows which it reads
+  first.
 * **mtd7 MISC2** is a small JSON blob (a MAC-prefix vendor table, a randomised
   MAC list and an interval) — vendor device-recognition state, not calibration.
 * Neither CFM nor MISC2 carries RF calibration; that lives in
