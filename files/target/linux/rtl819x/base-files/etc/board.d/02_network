@@ -19,14 +19,44 @@ board=$(cat /tmp/sysinfo/board_name)
 # now sits next to the board it was measured on.
 case $board in
   rx2l-pro|*rx2l-pro)
-    # Untagged eth0 is the only device defensible offline: an untagged frame on
-    # the CPU NIC line defaults to the LAN VID (rtl819x-eth.c:1381-1395), so it
-    # is the shape most likely to survive an unconfigured external switch. WAN
-    # stays on the VLAN sub-device and is EXPECTED DEAD on first boot -- a jack
-    # cannot become a WAN until the external switch is programmed. Better a
-    # visibly dead WAN (LAN + 2.4 GHz AP come up, so the box is reachable) than a
-    # silently bridged lan+wan, which loops.
-    ucidef_set_interfaces_lan_wan "eth0" "eth0.1"
+    # The external RTL8367RB is a swconfig switch (`switch0`), and the SoC-side
+    # driver does NOT hand us untagged per-jack netdevs: rtl819x_eth.c tags every
+    # received frame itself with RTL_NASH_VID=9 (LAN) or RTL_WAN_VID=8 (WAN)
+    # (drivers/net/ethernet/rtl819x/rtl819x_eth.c:54-55, the
+    # __vlan_hwaccel_put_tag at :679), so the interfaces that can actually see
+    # traffic are eth0.9 and eth0.8. An earlier version of this file used
+    # "eth0"/"eth0.1" -- the internal-rtl865x shape -- which on this board can
+    # only ever receive nothing: eth0.1 carries VID 1 and the driver never emits
+    # it.
+    #
+    # Port roles come from the stock firmware's own config (mtd2 CFG, dumped from
+    # this unit), not from a guess:
+    #   lanvlan=1 0x15d 0x40     -> VLAN 1 members {0,2,3,4,6,8}, untagged {6}
+    #   wanvlan1=2 0x142 0x40    -> VLAN 2 members {1,6,8},     untagged {6}
+    #   lan1/2/3.phyid=4/3/2     -> LAN jacks are switch ports 4,3,2
+    #   wan1.phyid_default=1     -> WAN jack is switch port 1
+    #   bit 6 in both masks      -> the CPU trunk is port 6, untagged on the
+    #                               vendor side (6t here, because our driver
+    #                               wants tagged frames -- see below)
+    # Port 0 is a member of LAN VLAN 1 in the vendor config but no stock netdev
+    # or phyid maps to it, so it is left out: an unlabelled port that silently
+    # joins the LAN bridge is worse than a port that does nothing.
+    #
+    # VLAN IDs are 9/8, NOT the vendor's 1/2. The driver hardcodes 9/8
+    # (RTL_NASH_VID/RTL_WAN_VID) and its RX path only ever tags those two, so
+    # programming the switch for 1/2 would leave every frame unmatched. The
+    # reference board solves this with a boot-time renumber script
+    # (OVL uci-defaults/06_switch_vlan_ids); we emit the final IDs directly
+    # instead, so there is no window where the config is wrong and no extra
+    # script that can half-run.
+    ucidef_add_switch "switch0" \
+        "4:lan:9" "3:lan:9" "2:lan:9" "1:wan:8" "6t@eth0"
+    ucidef_set_interfaces_lan_wan "eth0.9" "eth0.8"
+    # WAN being reachable depends entirely on this switch config taking effect,
+    # so if the driver fails to probe the switch, both VLANs are absent and the
+    # board is reachable only over the 2.4 GHz AP or serial. That is the
+    # intended failure mode: a visibly dead Ethernet, never a silently bridged
+    # LAN/WAN (which loops).
     ;;
   *)
     # R3: this used to say "eth0" "eth1". There IS no eth1 on the DIR-842 R1 — the

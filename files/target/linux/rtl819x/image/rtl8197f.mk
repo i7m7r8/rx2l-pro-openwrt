@@ -302,6 +302,7 @@ define Device/tenda_rx2lpro
   # defconfig symbol that cannot build; track 05 adds this back together with the
   # package definition that makes it true.
   DEVICE_PACKAGES := kmod-leds-gpio kmod-gpio-button-hotplug \
-	ppp ppp-mod-pppoe kmod-nf-flow kmod-ipt-offload iperf3 tcpdump-mini
+	ppp ppp-mod-pppoe kmod-nf-flow kmod-ipt-offload iperf3 tcpdump-mini \
+	swconfig
 endef
 TARGET_DEVICES += tenda_rx2lpro
