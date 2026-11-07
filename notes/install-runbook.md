@@ -73,6 +73,20 @@ Then upload `*-tenda-plaintext.bin` in the webui (Local Upgrade). Expect the
 page to report success, one `KernelFS` write, and a reboot. If the upload is
 rejected with `errCode=1`, the symlink was not in place when `check_fw` ran.
 
+### What the flasher does with the 64-byte header
+
+Both routes hand it the **plaintext** artifact (64-byte Tenda header + `cr6c`
+container), and it does not write those 64 bytes to flash: the write path seeks
+past them first (`tendaupgrade@0x4018c4: addiu $a1,$zero,0x40` immediately before
+the seek/write helper at `0x4027e4`). The partition therefore ends up starting
+with `cr6c` at offset 0, which is what the boot loader reads and what the stock
+`mtd3` dump looks like.
+
+Consequence for the size budget: the file handed to the flasher is 0x40 bytes
+larger than what lands in `KernelFS`, and `check_fw`'s `check_mtd_size` sees the
+file. Our images sit far below the 15.5 MiB partition, so this only matters at
+the very top of the budget.
+
 ## 3. Pre-flight, once, before any flash
 
 Keep the device's own flash content off-device first. That is the only thing
