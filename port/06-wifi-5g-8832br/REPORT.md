@@ -138,3 +138,38 @@ It is deliberately NOT enabled in this tree: the first image we hand over must
 boot, and a PCIe hang would take the whole board down before anyone could see
 whether the rest works. The experiment belongs to a boot on the bench, with the
 serial console open and the initramfs image — not to the first flash.
+
+## The PCIe driver may need no porting at all — evidence and a prediction
+
+Before the experiment branch finishes, the API surface was checked directly
+against v6.18, because "does it compile" and "does it work" are separate
+questions and only the first can be answered in CI.
+
+`arch/mips/pci/pci-realtek.c` is written against the **legacy MIPS PCI core**:
+
+| it uses | v6.18 still has it? |
+|---|---|
+| `struct pci_controller` | ✔ `arch/mips/include/asm/pci.h:30` |
+| `register_pci_controller()` | ✔ declared `pci.h:58`, defined `arch/mips/pci/pci-legacy.c` |
+| `pcibios_map_irq(const struct pci_dev *, u8, u8)` | ✔ same signature, `pci.h:63` |
+| `pci_ops` with `.read/.write` | ✔ unchanged shape |
+| `ioport_resource` / `iomem_resource` mutation | ✔ still writable symbols |
+
+And the core that provides `register_pci_controller` is selected by
+`CONFIG_PCI_DRIVERS_LEGACY` (`arch/mips/pci/Makefile:7`), which this port
+already sets — it is `def_bool !PCI_DRIVERS_GENERIC`, and the Realtek platform
+never selects the generic one.
+
+**Prediction, to be checked against the build:** `pci-realtek.c` compiles on
+6.18 unchanged once `HAVE_PCI` is reachable. The only thing that ever stopped it
+was the platform's `select HW_HAS_PCI`, a symbol current kernels do not have
+(see above). Two known non-blocking defects were left alone deliberately:
+`devm_clk_get()` is tested with `if (!rpc->clk)` instead of `IS_ERR()`, and
+`pcibios_map_irq()` hardcodes IRQ 5 with a TODO for the second slot — both are
+behaviour bugs to revisit if/when the card is brought up, not compile errors,
+and changing them before we can test on hardware would only make the first
+boot harder to reason about.
+
+If it compiles, the 5 GHz sequence becomes: enable PCI (config only) → boot
+validate on the bench → then the SKD port. If it does not, the failure will name
+which of the five rows above moved.
