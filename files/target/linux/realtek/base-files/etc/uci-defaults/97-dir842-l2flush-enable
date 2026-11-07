@@ -1,4 +1,9 @@
 #!/bin/sh
 # base-files init scripts are not auto-enabled; create the rc.d symlink once.
+# BOARD GATE: enable the DIR-842 R1 service only. Without it, an S97 script that
+# writes D-Link ASIC/L2-flush knowledge into the RTL819x fabric would run at
+# boot on the RX2L Pro. See the header of 09_wireless-dualband-dir842.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "gwr1200ac-v1" ] || exit 0
+
 /etc/init.d/dir842-l2flush enable
 exit 0

@@ -50,9 +50,11 @@ jobs:
       - name: Build OpenWrt
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp/owrt-home \
             -v "$GITHUB_WORKSPACE":/build:rw \
             -w /build \
-            owrt-rx2lpro ./build.sh
+            owrt-rx2lpro bash -c 'mkdir -p "$HOME" && ./build.sh'
 
       - name: Record what was produced
         run: |

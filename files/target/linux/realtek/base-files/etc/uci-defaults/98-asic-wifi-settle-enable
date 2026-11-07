@@ -5,5 +5,14 @@
 # nothing creates its /etc/rc.d/ symlink — so it must be enabled once, here.
 # Without it the box boots with a dead WIRELESS datapath (both radios beacon,
 # nobody can associate) while the wired path looks perfectly healthy.
+# BOARD GATE: as above, DIR-842 R1 only. /etc/init.d/asic-wifi-settle exists to
+# re-run the dir842-asic ASIC bring-up AFTER the wlan interfaces come up; that
+# service is gated off on other boards, so enabling its shim here would only
+# produce a restart of a disabled service. FOLLOW-UP for the RX2L Pro: the
+# ordering problem this solves is real on RTL8197F generally ("both radios
+# beacon, nobody can associate"), so once this board's own datapath bring-up
+# service exists, give it its own settle pass rather than reusing this one.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "gwr1200ac-v1" ] || exit 0
+
 /etc/init.d/asic-wifi-settle enable
 exit 0

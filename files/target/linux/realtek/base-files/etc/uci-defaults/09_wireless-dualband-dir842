@@ -35,6 +35,15 @@
 # wifi-iface ifname is left unset so it follows the resolved radio — that part is
 # still correct and still the right approach for the VENDOR radio.
 
+# ★ BOARD GATE (port audit). Everything below is DIR-842 R1 hardware knowledge:
+# it seeds a PCIe RTL8822BE 5 GHz radio that the RX2L Pro does not have (that
+# board's 5 GHz is an RTL8832BR, which this tree has no driver for). Seeding a
+# radio with no driver makes `wifi` fail to come up at all and burns the
+# first-boot window, so this runs only on the board it was measured on.
+# /tmp/sysinfo/board_name is guaranteed present here: config_generate (board.d)
+# runs before uci_apply_defaults in /etc/init.d/boot.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "gwr1200ac-v1" ] || exit 0
+
 # The driver ingests /etc/Wireless/RTL8192CD.dat on interface-up
 # (8192cd_comapi.c:3431, called from 8192cd_osdep.c:7703). Stock symlinks this
 # directory to /tmp so the file lands in tmpfs instead of causing a flash write

@@ -1,0 +1,105 @@
+#!/bin/sh
+#
+# Tenda RX2L Pro (RTL8197F) — 2.4 GHz AP seed.
+#
+# WHY THIS FILE EXISTS. `wifi detect` only enumerates cfg80211 wiphys. This
+# board's 2.4 GHz radio is the on-SoC RTL8197F WMAC, driven by the vendor
+# rtl8192cd module over WEXT — it has no wiphy, so nothing generates its
+# wifi-device stanza and an unseeded image boots with NO wireless at all.
+# Handler: /lib/netifd/wireless/rtl8192cd.sh.
+#
+# It deliberately mirrors /etc/uci-defaults/09_wireless-dualband-dir842 (that
+# file is now gated to gwr1200ac-v1) minus the 5 GHz half, and keeps the two
+# measurements that file paid for:
+#   - band is a BITMASK, not a mode index. dot11BssType.net_work_type
+#     (8192cd.h:875 enum NETWORK_TYPE): 11b=BIT(0)=1, 11g=BIT(1)=2,
+#     11a=BIT(2)=4, 11_24N=BIT(3)=8  =>  2.4 GHz 11b/g/n = 1|2|8 = 11.
+#     The value '7' asks a 2.4 GHz radio for 5 GHz-only OFDM and drops 11n.
+#   - no interface NAME is pinned. Which netdev the vendor driver gets depends
+#     on module load order, so the handler resolves it by identity
+#     (/proc/<if>/mib_all exists only for rtl8192cd). Pinning wlan0/wlan1 here
+#     is what broke the reference board when load order flipped.
+#
+# 5 GHz IS NOT SEEDED, ON PURPOSE. The card is an RTL8832BR (Wi-Fi 6) on PCIe,
+# not the RTL8822BE this port was inherited from: mainline rtw88 does not know
+# the chip, rtw89 needs a newer kernel than 4.14, and the vendor stack is
+# Realtek's SKD ("rtk_wifi6"), which is out of tree. Seeding a radio whose
+# driver is absent is worse than seeding nothing — netifd then fails the whole
+# wireless bring-up, including the 2.4 GHz AP.
+#
+# ★ This AP is also the fallback access path for first boot. The Ethernet
+# datapath here is still unmeasured: rtl819x-eth.c programs the SoC VLAN table
+# for the reference topology (sw_add_vlan_fid(RTL865X_VID_LAN, 0x10F, ...) =
+# "jacks 0-3 + CPU8"), while this board's jacks sit behind an external
+# RTL8367RB-class switch whose CPU trunk port is not yet identified. If that
+# mask turns out not to include the trunk, eth0 carries nothing and this
+# 2.4 GHz AP is how you get in (see README "First-boot risk checklist").
+
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "rx2l-pro" ] || exit 0
+
+# The driver rewrites /etc/Wireless/RTL8192CD.dat on every interface-up
+# (8192cd_comapi.c:3431, applied from 8192cd_osdep.c:7703). Keep it in RAM or
+# each `wifi up` is a flash write; stock symlinks the same directory to /tmp.
+[ -e /etc/Wireless ] || ln -s /tmp /etc/Wireless
+
+[ -e /etc/config/wireless ] || touch /etc/config/wireless
+
+# Seed once. On this board radio0 is free: there is no mac80211 wiphy to claim
+# it (on the reference board the vendor radio had to be radio1 because rtw88
+# held radio0).
+uci -q get wireless.radio0 >/dev/null && exit 0
+
+# Per-unit 2.4 GHz MAC. The vendor keeps these as ASCII key=value lines in the
+# mtd2 "CFG" apmib text store, and on the unit we dumped it the 2.4 GHz AP MAC
+# was exactly LAN+4 (LAN ..b0, 2.4 GHz ..b4, 5 GHz ..c4 = LAN+0x14). We COMPUTE
+# LAN+4 rather than grep the "wlan?_mac" key because the vendor's own band
+# labels disagree with themselves — /etc_ro/eth_name_conf.txt calls wlan0 the
+# 2.4 GHz radio while the live config and RouterCfm.cfg show wlan0 as the 5 GHz
+# one, so the key name is not a reliable band indicator.
+#
+# This is NOT a second source of truth for the interface MACs: network.lan and
+# network.wan stay owned by /etc/board.d/02_network. Only the radio's own
+# address is written here, and only by this file.
+lan_mac=$(grep -ao 'TENDA\.lan_mac=[0-9A-Fa-f:]\{17\}' "$(find_mtd_part CFG)" 2>/dev/null |
+          head -n1 | cut -d= -f2 | tr 'A-F' 'a-f')
+case "$lan_mac" in
+  [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+  *) lan_mac="" ;;
+esac
+wlan2g_mac=""
+[ -z "$lan_mac" ] || wlan2g_mac=$(macaddr_add "$lan_mac" 4)
+
+uci -q batch <<'EOF'
+set wireless.radio0='wifi-device'
+set wireless.radio0.type='rtl8192cd'
+set wireless.radio0.hwmode='11g'
+set wireless.radio0.channel='6'
+set wireless.radio0.htmode='HT20'
+set wireless.radio0.band='11'
+# country = the driver's own country index, kept at the value the reference port
+# brought up an associating client with. NOT the vendor's ISO country code from
+# CFG (that unit was "ID"); if 2.4 GHz TX shows up on the wrong channel plan,
+# this is the knob to re-measure, not band.
+set wireless.radio0.country='1'
+set wireless.radio0.disabled='0'
+
+set wireless.default_radio0='wifi-iface'
+set wireless.default_radio0.device='radio0'
+set wireless.default_radio0.network='lan'
+set wireless.default_radio0.mode='ap'
+set wireless.default_radio0.ssid='RX2L-2G'
+# Open on purpose, same stance as the reference seed: a PSK baked into a
+# published image is a published credential. Set encryption='psk2' + key before
+# this goes near a real network — or ship it out-of-band via build.sh's PROFILE=
+# mechanism, which layers a private files/ overlay at build time and never
+# reaches the repo. In-kernel WPA2-PSK is valid here (8192cd_psk.c); this driver
+# does NOT use hostapd/wpad.
+set wireless.default_radio0.encryption='none'
+commit wireless
+EOF
+
+[ -n "$wlan2g_mac" ] && {
+	uci -q set wireless.radio0.macaddr="$wlan2g_mac" && uci -q commit wireless
+}
+
+exit 0

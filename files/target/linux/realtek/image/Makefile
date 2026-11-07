@@ -352,11 +352,21 @@ define Device/RX2LPRO
 	cvimg-pad-rootfs | tenda-wrap
   IMAGE/sysupgrade.bin := append-kernel | cvimg-kernel-cr6c | append-rootfs | \
 	cvimg-pad-rootfs | sysupgrade-tar | append-metadata
-  # TODO(port-facts): confirm this board's 5 GHz chip before trusting the
-  # rtw88/RTL8822BE pairing inherited from the reference board.
-  DEVICE_PACKAGES := kmod-rtw88 rtl8822be-firmware wpad-basic iw \
-	kmod-leds-gpio kmod-gpio-button-hotplug swconfig \
-	ppp ppp-mod-pppoe kmod-nf-flow kmod-ipt-offload iperf3
+  # R4 audit: the rtw88/RTL8822BE pair is WRONG for this board — it was inherited
+  # from GWR1200AC-V1 (DIR-842 R1), whose 5 GHz card is an RTL8822BE. The RX2L
+  # Pro's 5 GHz is an RTL8832BR (Wi-Fi 6, vendor platform dir
+  # rtl8197h_8832br_8367rb_11ax_mesh) and there is no 4.14 driver for it: rtw88
+  # does not know the chip, rtw89 is a >=5.15 driver, and the vendor stack is
+  # Realtek's out-of-tree SKD. Shipping the pair cost ~1.5 MB of a 15.5 MB
+  # partition, would never bind, and left kmod-mac80211/cfg80211/wpad/iw in the
+  # image for a radio that does not exist. 2.4 GHz is the on-SoC WMAC via the
+  # vendor rtl8192cd (see /etc/uci-defaults/12_wireless-2g-rx2lpro).
+  # swconfig also dropped: nothing in this tree registers a swconfig device
+  # (rtl819x-eth is a plain netdev with hwaccel VLAN tags), so it was userspace
+  # for a switch agent that never appears.
+  DEVICE_PACKAGES := kmod-rtl8192cd \
+	kmod-leds-gpio kmod-gpio-button-hotplug \
+	ppp ppp-mod-pppoe kmod-nf-flow kmod-ipt-offload iperf3 tcpdump-mini
 endef
 TARGET_DEVICES += RX2LPRO
 endif

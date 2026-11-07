@@ -131,6 +131,34 @@ RSA verifier, a webui-reachable path exists after all. That investigation is in
 flight; this README will say so plainly when it lands. Until then, treat paths
 1–4 as the plan.
 
+## First-boot risk checklist
+
+Ordered by "what actually stops a boot", and what each item's failure looks like
+on the serial console. Every one of these is a decision in the tree, not a
+generic worry — the file named is where it lives.
+
+| # | Risk | Mechanism / where | Symptom if wrong | Status |
+|---|------|-----------------|------------------|--------|
+| 1 | **Board name does not resolve** | `lib/realtek.sh` matches `/proc/cpuinfo` `machine` against a hardcoded list; an unmatched board gets `board_name=generic` and `etc/board.d/02_network` never configures anything | boots, but no LAN config at all (default `br-lan` with no ports) | **fixed** — `"RX2L Pro"` entry added |
+| 2 | **Root device never assigned** | there is deliberately **no `root=`** in the cmdline: `CONFIG_MIPS_CMDLINE_FROM_DTB=y` + `chosen bootargs` in `dts/RX2LPRO.dts`, and the root device comes from `CONFIG_MTD_ROOTFS_ROOT_DEV=y` (base tree `generic/config-4.14`) firing on the partition `mtdsplit_cvimg` creates | `VFS: Unable to mount root fs on unknown-block(0,0)` — hard hang at the same place every boot | verified in this audit; parser offset bug found and **fixed** (`mtdsplit_cvimg.c`: `len` is used *exact*, `+2` for the checksum — the old `ALIGN(len,4)` landed 2 bytes past the superblock) |
+| 3 | **Partition label** | `CONFIG_MTD_SPLIT_FIRMWARE_NAME="firmware"` — the cvimg parser only runs on a partition named exactly `firmware` | same as #2 | label is `firmware` in `dts/RX2LPRO.dts` ✓ |
+| 4 | **squashfs magic** | the vendor kernel needs the mangled magic (port-facts §6: `hsqs`→`nice`, *and* a mangled XZ magic — theirs is a squashfs fork); our image ships **our own kernel**, which uses stock `hsqs`, and `mtdsplit.c` matches `SQUASHFS_MAGIC` | rootfs not found / not mounted | do **not** mangle ours; both ends are ours. CI gate: `tools/check-cr6c.py` |
+| 5 | **Header `start_addr` vs where the loader is linked** | `CVIMG_LOADER_START_ADDR := 0x81000000` == `LZMA_TEXT_START` in `image/Makefile`. The reference port's boot log shows the Realtek SDK loader honoring the field (`Jump to image start=0x81000000`), but **Tenda's own stage-1 is a different binary** | silent: nothing on the console after `Booting...` | **open** — stage-1 disassembly in flight (mtd1's copy-destination and jump-target sources) |
+| 6 | **Ethernet datapath** | `rtl819x-eth.c` hardcodes the SoC VLAN table for the *reference* topology (`sw_add_vlan_fid(RTL865X_VID_LAN, 0x10F, ...)` = jacks 0-3 + CPU8). This board's jacks hang off an external **RTL8367RB-class** switch with **no driver and no DT node**, and its CPU trunk port is unidentified | box boots and is reachable only over UART or the 2.4 GHz AP; WAN dead | **open** — mitigated: LAN is `eth0` untagged (not `eth0.2`), and the 2.4 GHz AP is seeded as the fallback path |
+| 7 | **2.4 GHz driver actually builds** | `CONFIG_RTL8192CD=m` in `rtl8197f/config-4.14`; the vendor source in `files-4.14/drivers/net/wireless/rtl8192cd` carries a Kconfig help that still says *"WORK IN PROGRESS — not expected to build or function yet"* while `modules.mk` says *"proven on hardware"* (the two statements come from different stages of the reference port) | if it fails: no radio at all, and the #6 fallback disappears → UART-only | **settled by the first CI build**; do not flash a factory image before it is green |
+| 8 | **5 GHz radio** | RTL8832BR (Wi-Fi 6) on PCIe; the vendor driver is Realtek's out-of-tree SKD (`rtk_wifi6`), mainline `rtw88` cannot bind it and `rtw89` is >=5.15 | none — it is simply absent, **by design**: seeding a radio with no driver makes netifd fail the whole wireless bring-up | documented in `seed.config`; the inherited `kmod-rtw88`/`rtl8822be-firmware` were removed in this audit |
+| 9 | **LED / button GPIO** | vendor configures LEDs/blobs through its own `ugw_gpio` misc driver with ids 54 (green), 57 (red), 33 (RESET **and** WPS on one pin); those are **vendor indices, not** `rtl8197f-gpio` numbers. On the reference board an LED node on the wrong pin held the external switch in reset | switch held in reset = dead Ethernet, looks like a brick | deliberately **undeclared** in `dts/RX2LPRO.dts` (TODO) |
+| 10 | **ramoops / pstore** | known TX wedge on this SoC family (CPU-originated frames dropped while RX works) | intermittent, brutal to debug | absent from our DTS by design |
+| 11 | **hardware NAT armed too early** | the reference board's `dir842-asic` (S97) service does `fabric_reset`/`gw_prog`/hwnat arming using D-Link flash geometry, incl. a 17-byte read of `/dev/mtd1` — which here is the vendor **Bootloader** | wedged TX at boot, i.e. "it boots but you can't reach it" | **gated to `gwr1200ac-v1`** in this audit (uci-defaults + both init scripts) |
+| 12 | **Vendor `tendaupgrade` KM signature gate** | the stock flasher writes `echo 1 > /proc/km/km_upgrade_ignore_kernel_sig`, and that node is mode **0440** | install refused, or a half-written KernelFS | only affects install path 3 (webui/`tendaupgrade`); paths 1/2/4 bypass it — see "Install paths" |
+
+**Sequence that keeps all of the above cheap:** RAM-boot
+`*-initramfs-kernel.bin` first (never writes flash) and read, in this order —
+`cat /tmp/sysinfo/board_name` (= `rx2l-pro`), `dmesg | grep mtdsplit` (rootfs
+offset), `cat /proc/mtd` (labels), `ip l` (eth0 present? link up?),
+`ls /proc/wlan*/mib_all` (rtl8192cd loaded?), `uci show network wireless`.
+Nothing gets flashed until each of those lines looks right on the console.
+
 ## Recovery net (verify offline before you need it)
 
 * mtd1..mtd7 were dumped and are kept off-device. Re-flashing mtd1 restores the

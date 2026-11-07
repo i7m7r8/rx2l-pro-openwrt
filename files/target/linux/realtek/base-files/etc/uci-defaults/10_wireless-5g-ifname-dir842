@@ -30,6 +30,13 @@
 # deletes a uci-defaults script that SUCCEEDS, so failing keeps this file and re-runs
 # it next boot instead of silently deleting it having done nothing.
 
+# BOARD GATE: DIR-842 R1 (gwr1200ac-v1) only — see the header of
+# 09_wireless-dualband-dir842 for why. On the RX2L Pro there is no mac80211 radio
+# to pin (5 GHz RTL8832BR has no driver in this tree), and running `wifi config`
+# here would regenerate /etc/config/wireless from cfg80211 and wipe the vendor
+# rtl8192cd stanza our own seed writes.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "gwr1200ac-v1" ] || exit 0
+
 [ -x /sbin/wifi ] && ! uci -q get wireless.@wifi-iface[0] >/dev/null 2>&1 && \
 	wifi config >/dev/null 2>&1
 

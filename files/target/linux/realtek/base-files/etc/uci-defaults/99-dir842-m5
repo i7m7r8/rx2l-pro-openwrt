@@ -10,6 +10,14 @@
 # same here. It lives in `system`, which `sysupgrade` preserves and a `-n` flash
 # regenerates, so: preserved config -> skip; clean flash -> seed.
 # (Cannot key on wireless.radio0: 10_wireless-5g-ifname runs `wifi config` first.)
+# BOARD GATE (port audit): this whole file is DIR-842 R1 knowledge — it reads
+# the D-Link per-unit ASCII MAC out of mtd1 (which on the RX2L Pro is the vendor
+# Bootloader, so the read yields garbage that then gets baked into
+# network.lan/wan.macaddr), names eth0.1/eth0.2 VLANs that this board's switch
+# topology does not guarantee, and seeds an RTL8822BE 5 GHz radio the RX2L Pro
+# does not have. See the header of 09_wireless-dualband-dir842.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "gwr1200ac-v1" ] || exit 0
+
 [ "$(uci -q get system.@system[0].dir842_m5_seeded)" = "1" ] && exit 0
 # DIR-842 R1 (RTL8197F) — default first-boot bring-up for the OpenWrt port.
 #
