@@ -1,0 +1,81 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# RX2L Pro, MODEL A (swconfig) ONLY: renumber the generated switch VLANs from
+# ucidef's ids 1/2 to 9/8, and move the LAN/WAN netdevs to eth0.9 / eth0.8.
+#
+# WHY, and this is a driver fact not a style preference:
+# the RTL8197F's INTERNAL switch sits in the same path as the external
+# RTL8367, and base A's ethernet driver hard-codes its VLAN ids --
+#   /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/files-6.18/
+#   drivers/net/ethernet/rtl819x_eth.c
+#     :54  #define RTL_NASH_VID   9
+#     :55  #define RTL_WAN_VID    8
+#     :899 #define RTL_LAN_PORTY  0x11F      (internal ports 0..4 + CPU 8)
+#     :1981 .cpu_port = 8  ("internal switch: ports 0..8, processor is 8th")
+#     :1264/:1617 rtl819x_intsw_zapis_vlan(RTL_NASH_VID...) + pvid(0, RTL_WAN_VID)
+#   i.e. internal port 0 (RGMII to the external chip) is only a member of VID 9
+#   and VID 8. A frame tagged 1 or 2 on that wire is dropped by the SoC.
+# ucidef_add_switch emits ids 1 (lan) and 2 (wan), so a stock-generated config
+# gives jacks that are administratively UP and carry nothing. base A hit this
+# and its own uci-defaults/06_switch_vlan_ids is the fix; this file is that
+# fix, re-targeted at this board's port numbering. It is also why these numbers
+# are 9/8 rather than "whatever the vendor used": stock's own lanvlan/wanvlan
+# ids are 1/2 (FACTS.md §5) but stock ran the vendor rtknet stack, which does
+# not carry these constants.
+#
+# ⚠ OPEN, and it is a driver-side question, not a userspace one: whether the
+# RTL8197F internal-switch view of THIS board's RGMII link really is internal
+# port 0 (base A's assumption for its RTL8367D on RX23302) and whether
+# RTL_LAN_PORTY=0x11F covers the mask we need. If the image boots with
+# netmodel=swconfig and the LAN still does not pass traffic, this is item #1
+# to re-measure -- `cat /proc/rtl819x/*` and `swconfig dev switch0 show` are
+# in first-boot-checklist.md. Do NOT work around it by tagging everything
+# untagged: base A's driver comment is explicit that untagged-on-CPU is the
+# only shape that survives, which is why MODEL C in 02_network uses bare eth0.
+#
+# Runs once, against the untouched generated config only (the two guards), so
+# a user who re-numbered their VLANs by hand is never re-edited.
+
+. /lib/functions.sh
+. /lib/realtek.sh
+
+rx2lpro_is_board || exit 0
+[ "$(rx2lpro_netmodel)" = swconfig ] || exit 0
+
+# Guards: only ever touch the freshly generated default. ucidef_add_switch
+# assigns VLAN 1 to the lan group and VLAN 2 to the wan group, so the
+# generated WAN device is eth0.2 (base A keys on exactly this, and its
+# renumber() maps 1->9 lan, 2->8 wan).
+[ "$(uci -q get network.lan.device)" = "br-lan" ] || exit 0
+[ "$(uci -q get network.wan.device)" = "eth0.2" ] || exit 0
+
+renumber() {
+	local sec="$1" vlan
+
+	config_get vlan "$sec" vlan
+	case "$vlan" in
+		1) uci set network."$sec".vlan='9' ;;
+		2) uci set network."$sec".vlan='8'
+		   # own MAC-learning table for WAN (FID 1), as base A does:
+		   # without it LAN and WAN share one L2 view and the ASIC
+		   # floods WAN-learned addresses into the LAN.
+		   uci set network."$sec".fid='1' ;;
+	esac
+}
+
+config_load network
+config_foreach renumber switch_vlan
+
+# br-lan's tagged port follows the LAN VLAN id.
+for sec in $(uci -q show network | sed -n 's/^network\.\([^.=]*\)=device$/\1/p'); do
+	[ "$(uci -q get network."$sec".name)" = "br-lan" ] || continue
+	uci -q del_list network."$sec".ports='eth0.1'
+	uci -q add_list network."$sec".ports='eth0.9'
+done
+
+uci set network.wan.device='eth0.8'
+[ -n "$(uci -q get network.wan6)" ] && uci set network.wan6.device='eth0.8'
+uci commit network
+
+exit 0

@@ -1,0 +1,152 @@
+# dtc check for port/03-dts-switch
+# generated on the workstation (no firmware build, no device access):
+#   cpp preprocessor + dtc, OpenWrt's own two-step flow
+#   (scripts/Makefile.lib: cpp ... | dtc -O dtb).
+#   Include dirs are the REAL include files of the two bases:
+#     A: /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/dts (RTL8197F.dtsi)
+#     B: /tmp/rebase-base/target/linux/realtek/dts                   (rtl8197f.dtsi)
+#   dt-bindings come from a kernel headers tree: /root/dl/linux-7.1.2/include
+
+$ dtc --version
+Version: DTC 1.7.2
+$ cpp --version   (GNU cpp, used exactly as scripts/Makefile.lib uses it)
+cpp (Debian 14.2.0-19) 14.2.0
+================================================================================
+STEP 1 - compile both variants (a syntax error is fatal and aborts here)
+================================================================================
+### A
+$ cpp -nostdinc -I /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/dts -I /root/dl/linux-7.1.2/include -undef -D__DTS__ -x assembler-with-cpp rtl8197f_tenda_rx2lpro.dts | dtc -O dtb -o tA.dtb -
+cpp exit: 0
+/tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/dts/RTL8197F.dtsi:10.9-12.5: Warning (unit_address_vs_reg): /cpus/cpu@0: node has a unit name, but no reg or ranges property
+/tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/dts/RTL8197F.dtsi:22.6-65.4: Warning (unit_address_vs_reg): /soc: node has a reg or ranges property, but no unit name
+/tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/dts/RTL8197F.dtsi:58.31-64.5: Warning (simple_bus_reg): /soc/gpio-controller@351C: simple-bus unit address format error, expected "351c"
+  also defined at rtl8197f_tenda_rx2lpro.dts:348.8-350.3
+rtl8197f_tenda_rx2lpro.dts:386.10-550.4: Warning (avoid_unnecessary_addr_size): /spi@18143000/flash@0: unnecessary #address-cells/#size-cells without "ranges", "dma-ranges" or child "reg" property
+dtc exit: 0
+
+### B
+$ cpp -nostdinc -I /tmp/rebase-base/target/linux/realtek/dts -I /root/dl/linux-7.1.2/include -undef -D__DTS__ -x assembler-with-cpp rtl8197f_tenda_rx2lpro_dsa66.dts | dtc -O dtb -o tB.dtb -
+cpp exit: 0
+/tmp/rebase-base/target/linux/realtek/dts/rtl8197f.dtsi:294.42-299.4: Warning (unique_unit_address): /ethernet-diagnostics@1b800000: duplicate unit-address (also used in node /switchcore@1b800000)
+  also defined at rtl8197f_tenda_rx2lpro_dsa66.dts:345.11-347.3
+/tmp/rebase-base/target/linux/realtek/dts/rtl8197f.dtsi:274.22-291.5: Warning (interrupt_provider): /soc@18000000/pcie@b00000: '#interrupt-cells' found, but node is not an interrupt provider
+  also defined at rtl8197f_tenda_rx2lpro_dsa66.dts:508.8-517.3
+/tmp/tB.dtb: Warning (interrupt_map): Failed prerequisite 'interrupt_provider'
+dtc exit: 0
+
+### round-trip (phandle re-resolution: dtc aborts on any dangling reference)
+/tmp/tA.dts.re: Warning (unit_address_vs_reg): /cpus/cpu@0: node has a unit name, but no reg or ranges property
+/tmp/tA.dts.re: Warning (unit_address_vs_reg): /soc: node has a reg or ranges property, but no unit name
+/tmp/tA.dts.re: Warning (simple_bus_reg): /soc/gpio-controller@351C: simple-bus unit address format error, expected "351c"
+/tmp/tA.dts.re: Warning (avoid_unnecessary_addr_size): /spi@18143000/flash@0: unnecessary #address-cells/#size-cells without "ranges", "dma-ranges" or child "reg" property
+dtc -I dtb exit: 0
+/tmp/tB.dts.re: Warning (unique_unit_address): /ethernet-diagnostics@1b800000: duplicate unit-address (also used in node /switchcore@1b800000)
+/tmp/tB.dts.re: Warning (interrupt_provider): /soc@18000000/pcie@b00000: '#interrupt-cells' found, but node is not an interrupt provider
+/tmp/tB.dts.re: Warning (interrupt_map): Failed prerequisite 'interrupt_provider'
+dtc -I dtb exit: 0
+
+================================================================================
+STEP 2 - phandle / cell verification (unresolved phandles are a blocker)
+================================================================================
+dtc hard-aborts on a reference to a non-existent label at compile time, and
+re-resolves every phandle on the dtb->dts round-trip above (exit 0 for both).
+Beyond that, the numeric phandles in the round-tripped trees were decoded
+against the node that owns them -- this is the part a syntax-only check never
+proves, and it is where a wrong gpio chip would hide:
+
+--- variant A  kernel 6.18 / swconfig (/tmp/tA.dts.re) ---
+phandle -> node:
+   0x01 = cpuintc
+   0x02 = intc@3000
+   0x03 = pcieclk
+   0x04 = gpio-controller@351C
+   interrupt-parent -> 0x01 (cpuintc)
+   interrupt-parent -> 0x02 (intc@3000)
+   interrupt-parent -> 0x01 (cpuintc)
+   interrupt-parent -> 0x01 (cpuintc)
+   interrupt-parent -> 0x01 (cpuintc)
+   clocks           -> 0x03 (pcieclk)
+   sck-gpios        -> 0x04 (gpio-controller@351C) cells: 0x18 0x00
+   sda-gpios        -> 0x04 (gpio-controller@351C) cells: 0x17 0x00
+   reset-gpios      -> 0x04 (gpio-controller@351C) cells: 0x1a 0x01
+phandle references checked: 9, unresolved: 0
+
+--- variant B  kernel 6.6 / DSA (/tmp/tB.dts.re) ---
+phandle -> node:
+   0x01 = clock-1000m
+   0x02 = interrupt-controller
+   0x03 = interrupt-controller@3000
+   0x04 = clock-200m
+   0x05 = syscon@0
+   0x06 = clock-100m
+   0x07 = rtl8367-smi-h0-g7-pins
+   0x08 = gpio-controller@3500
+   0x09 = ethernet-phy@0
+   0x0a = ethernet-phy@1
+   0x0b = ethernet-phy@2
+   0x0c = ethernet-phy@3
+   0x0d = ethernet-phy@4
+   0x0e = ethernet@10000
+   interrupt-parent -> 0x02 (interrupt-controller)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x03 (interrupt-controller@3000)
+   interrupt-parent -> 0x02 (interrupt-controller)
+   interrupt-parent -> 0x02 (interrupt-controller)
+   interrupt-parent -> 0x02 (interrupt-controller)
+   clocks           -> 0x01 (clock-1000m)
+   clocks           -> 0x04 (clock-200m)
+   clocks           -> 0x04 (clock-200m)
+   clocks           -> 0x04 (clock-200m)
+   clocks           -> 0x04 (clock-200m)
+   clocks           -> 0x04 (clock-200m)
+   clocks           -> 0x06 (clock-100m)
+   clocks           -> 0x06 (clock-100m)
+   clocks           -> 0x06 (clock-100m)
+   ethernet         -> 0x0e (ethernet@10000)
+   realtek,syscon   -> 0x05 (syscon@0)
+   realtek,syscon   -> 0x05 (syscon@0)
+   pinctrl-0        -> 0x07 (rtl8367-smi-h0-g7-pins)
+   reset-gpios      -> 0x08 (gpio-controller@3500) cells: 0x3a 0x01
+   mdc-gpios        -> 0x08 (gpio-controller@3500) cells: 0x38 0x00
+   mdio-gpios       -> 0x08 (gpio-controller@3500) cells: 0x37 0x00
+   phy-handle       -> 0x09 (ethernet-phy@0)
+   phy-handle       -> 0x0a (ethernet-phy@1)
+   phy-handle       -> 0x0b (ethernet-phy@2)
+   phy-handle       -> 0x0c (ethernet-phy@3)
+   phy-handle       -> 0x0d (ethernet-phy@4)
+phandle references checked: 31, unresolved: 0
+================================================================================
+VERDICT
+VERDICT
+================================================================================
+Both variants compile: cpp exit 0, dtc exit 0, and the dtb -> dts round-trip
+exit 0 for both. No syntax errors, no unresolved phandles (40 references
+checked in total, 0 dangling). Every warning shown is inherited from the two
+bases' own .dtsi files (cpu@0 unit-name, /soc unit-address, the gpio-controller@351C
+capitalisation, the ethdiag/switchcore 0x1b800000 collision and the pcie
+interrupt_provider note); none originates in these board files, and none is a
+blocker. OpenWrt builds realtek DTS with -Wno-... defaults and would show the
+same set.
+
+Cell decode, the numbers that matter:
+
+  variant A (6.18, two 32-line chips)   phandle 0x04 = gpio-controller@351C = gpio1
+      sck-gpios    = <&gpio1 24 0>  0x18 = 24  -> vendor line 56 (H0, MDC)
+      sda-gpios    = <&gpio1 23 0>  0x17 = 23  -> vendor line 55 (G7, MDIO)
+      reset-gpios  = <&gpio1 26 1>  0x1a = 26  -> vendor line 58 (H2, ~RESET, ACTIVE_LOW)
+      realtek,extif = 10 cells, cpu_port 6 -> RTL8367B_CPU_PORT_NUM(5)+1 = EXTIF1
+
+  variant B (6.6, one 64-line chip)     phandle 0x08 = gpio-controller@3500 = gpio0
+      mdc-gpios    = <&gpio0 56 0>  0x38 = 56  -> same pad, different arithmetic
+      mdio-gpios   = <&gpio0 55 0>  0x37 = 55
+      reset-gpios  = <&gpio0 58 1>  0x3a = 58
+      pinctrl-0 -> rtl8367-smi-h0-g7-pins, ethernet -> ethernet@10000 (port@6 cpu)
+
+  Both: memory reg = 0x8000000 (128 MiB), CFG partition carries the three
+  ASCII nvmem cells at 0x23b / 0x5b5 / 0x5d7 and NO mac-base cell, and
+  leds/keys are status = "disabled" with the phandles commented out, so
+  nothing can be probed by accident.

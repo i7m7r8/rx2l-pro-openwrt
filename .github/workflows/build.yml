@@ -7,6 +7,7 @@ on:
       - 'files/**'
       - 'tools/**'
       - 'tests/**'
+      - 'port/**'
       - 'Dockerfile'
       - 'build.sh'
       - 'feeds.conf'
@@ -18,31 +19,67 @@ permissions:
   contents: read
 
 jobs:
-  # Fast gate: the two tools that decide whether an image is trustworthy must
-  # round-trip against a known container before we burn hours on a build.
+  # Fast gate: the two things that decide whether a build is worth two hours of
+  # runner. Both run before the base tree is even cloned, because both failure
+  # modes cost a full clone plus a silent, wrong image.
   selftest:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
       - name: Build tenda-wrap
         run: |
           gcc -Wall -Wextra -Werror -O2 -o /tmp/tenda-wrap \
             files/tools/firmware-utils/src/tenda-wrap.c
+
       - name: Round-trip a synthetic container
         run: python3 tests/test_container.py
 
-  # The real build. Bullseye because the base tree is a 2020 fork: kernel 4.14,
-  # gcc 8.4, python2 host tools. OpenWrt also refuses to build as root, which is
-  # what the container's `builder` user (uid 1000, the GitHub runner's uid) is for.
+      # feeds.conf is parsed by a Perl script that strips comments with
+      # s/#.+$// -- one or MORE characters after the hash. A line whose only
+      # content is "#" therefore survives the strip, is not whitespace, is not
+      # a src-<type> line, and dies with "Syntax error in feeds.conf, line N"
+      # pointing at a line that looks perfectly commented out -- after the base
+      # tree has been cloned and the compile started. This is the same five
+      # lines scripts/feeds:54-61 uses at base rev 82e2e4f4, verified locally
+      # by running that script's `feeds list -n` against the file.
+      - name: feeds.conf parses the way scripts/feeds parses it
+        run: |
+          perl -e '
+            my $n = 0;
+            open my $fh, "<", "feeds.conf" or die "no feeds.conf";
+            while (<$fh>) {
+              chomp; s/#.+$//; $n++;
+              next unless /\S/;
+              my ($type, $flags, $name, $urls) =
+                m!^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$!;
+              die "Syntax error in feeds.conf, line $n\n" unless $type && $name;
+              print "ok  line $n: $name -> ", ($urls // ""), "\n";
+            }
+          '
+
+  # The real build. Debian 13 (trixie) container because the base is current
+  # upstream: kernel 6.18.41, python3.13 host tools, no python2 anywhere.
+  #
+  # OpenWrt refuses to build as root, and the tree must end up owned by the
+  # runner's uid or git aborts with "detected dubious ownership" (exit 128,
+  # before any compile). Hence --user $(id -u):$(id -g) with HOME pointed at a
+  # path the run creates itself, and the :rw on the bind mount. Proven on the
+  # 4.14 line; unchanged here for exactly that reason.
   openwrt:
     needs: selftest
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h /
 
       - name: Build the toolchain container
         run: docker build -t owrt-rx2lpro .
@@ -58,15 +95,29 @@ jobs:
 
       - name: Record what was produced
         run: |
-          ls -la openwrt/bin/targets/realtek/rtl8197f/ || true
+          ls -la openwrt/bin/targets/rtl819x/rtl8197f/ || true
+          # The seed's whole failure mode is a symbol dropped silently at
+          # defconfig time; printing the resolved selection costs nothing and
+          # is the only place the drop becomes visible after the build.
+          grep -E '^CONFIG_(TARGET_rtl819x|TARGET_ROOTFS|PACKAGE_(luci|uhttpd|firewall4|swconfig|rtlmib|kmod-nft-offload)|KERNEL_(LZMA|SQUASHFS))' \
+            openwrt/.config || true
           cat MANIFEST-built.txt || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: rx2lpro-images
           path: |
-            openwrt/bin/targets/realtek/rtl8197f/*.bin
-            openwrt/bin/targets/realtek/rtl8197f/*.itb
+            openwrt/bin/targets/rtl819x/rtl8197f/*.bin
+            openwrt/bin/targets/rtl819x/rtl8197f/*.itb
             MANIFEST-built.txt
           if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rx2lpro-config
+          path: |
+            openwrt/.config
+            openwrt/.rx2l-applied
+          if-no-files-found: warn
           retention-days: 30

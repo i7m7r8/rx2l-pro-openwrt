@@ -1,0 +1,146 @@
+#!/bin/sh
+#
+# Tenda RX2L Pro (RTL8197F) — 2.4 GHz first-boot wireless seed, Linux 6.18.
+#
+# REWRITE OF files/target/linux/realtek/base-files/etc/uci-defaults/
+#                                      12_wireless-2g-rx2lpro   (4.14 line)
+#
+# WHAT CHANGED, and why each change is load-bearing
+# -------------------------------------------------
+# 1. The radio now has a wiphy.  On 4.14 the vendor rtl8192cd was WEXT-only,
+#    had no cfg80211 struct, and `wifi detect` enumerated nothing — that is
+#    the entire reason the old file existed and why it had to hard-create a
+#    `type=rtl8192cd' section.  The 6.18 driver registers a real wiphy
+#    (wiphy_new() in 8192cd_cfg80211.c), so detection works and this script is
+#    now a *tuner*, not the only thing that makes a radio exist.  If it is
+#    deleted the image still boots with a visible, configurable radio; what
+#    you lose is the channel/width/MAC defaults below.
+#
+# 2. `type` is 'mac80211', not 'rtl8192cd'.  netifd dispatches a wifi-device
+#    on type -> /lib/netifd/wireless/<type>.sh, and 'mac80211' is the handler
+#    shipped by the mac80211 package on the new base.  'rtl8192cd' would be a
+#    handler we would have to ship ourselves (the 6.18 sibling port does exactly
+#    that, but only because its kernel build has cfg80211 compiled OUT — our
+#    adopted build has it IN).  See uci-wireless.txt for the full option list
+#    and for the fallback config.
+#
+# 3. `band` is a mode string ('2g'), NOT the bitmask the old script wrote.  The
+#    old `option band 11' was the driver's own dot11BssType.net_work_type mask
+#    (11b|11g|11n = 1|2|8 = 11) that /lib/netifd/wireless/rtl8192cd.sh passed
+#    straight to set_mib.  Under the mac80211 handler `band' means 2g/5g/6g and
+#    the rate-phy selection is hostapd's job.  Copying '11' through would be
+#    silently ignored at best.
+#
+# 4. `hwmode 11g` / `country 1` are gone.  hwmode is derived from band+htmode
+#    now; `country` is the ISO code hostapd needs, and this unit's own factory
+#    value is in the CFG apmib as TD_WLAN0_WLAN_COUNTRY / TENDA.wlan?_countrycode
+#    — we deliberately do NOT bake a country in, because a published image
+#    must not pick a regulator for someone else's unit (see uci-wireless.txt).
+#
+# 5. The MAC is still computed, never stored, and is now read from the apmib
+#    key instead of arithmetic.  The old script used LAN+4 because that is what
+#    the dump happened to show; the same dump also contains the authoritative
+#    HW_WLAN1_WLAN_ADDR, and the apmib's own band naming (WLAN1 = the 14-entry
+#    CCK/HT40 2.4 GHz tables) says WLAN1 IS this radio.  Use the key, keep
+#    LAN+4 only as the fallback.  rfhw-convert applies it to the netdev; this
+#    script only mirrors it into UCI so LuCI shows the right thing.
+#
+# 6. Still no 5 GHz section, still on purpose.  RTL8832BR is Wi-Fi 6 on PCIe
+#    and nothing in 6.x-OpenWrt drives it; seeding a radio whose driver is
+#    absent makes netifd fail the whole wireless bring-up, 2.4 GHz included.
+#
+# THIS AP IS THE FALLBACK ACCESS PATH.  The Ethernet datapath is still
+# unmeasured (external RTL8367-family switch, CPU trunk port not identified,
+# README risk #6), so the thing that has to be true is: module loads, wiphy
+# appears, an OPEN AP with a known SSID is up without any user configuration.
+# Keep it open; do not "fix" this by adding a baked-in PSK.
+
+. /lib/functions.sh 2>/dev/null || exit 0
+
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "rx2l-pro" ] || exit 0
+
+# ---------------------------------------------------------------- discovery
+# The vendor WMAC is the only wiphy this board can produce, so phy0 is it by
+# construction.  Resolve its device path the way the mac80211 detect script
+# does, rather than hardcoding a string that depends on how the platform
+# device is named in the DTS.
+phy=""
+for p in /sys/class/ieee80211/phy*; do
+	[ -e "$p" ] || continue
+	phy="${p##*/}"
+	break
+done
+
+if [ -z "$phy" ]; then
+	# No wiphy: either kmod-rtl8192cd is not in the image or the module
+	# failed to probe.  Say so loudly on the console at first boot instead of
+	# leaving the operator to guess why there is no AP.
+	echo "rx2lpro 2g seed: no ieee80211 wiphy found - 2.4 GHz WILL be down" >&2
+	echo "rx2lpro 2g seed: check 'dmesg | grep -i 8192cd' and /proc/wlan*/mib_all" >&2
+	exit 0
+fi
+
+devpath=$(readlink -f "/sys/class/ieee80211/$phy" 2>/dev/null)
+radio_path="${devpath%/ieee80211/*}"
+radio_path="${radio_path#/}"
+
+# --------------------------------------------------------------------- seed
+[ -e /etc/config/wireless ] || touch /etc/config/wireless
+
+# `wifi detect' has already written a disabled radio0 with defaults by the time
+# uci-defaults run on some builds and not on others; do not duplicate.
+radio=radio0
+
+uci -q batch <<EOF
+set wireless.$radio='wifi-device'
+set wireless.$radio.type='mac80211'
+set wireless.$radio.path='$radio_path'
+set wireless.$radio.phy='$phy'
+set wireless.$radio.band='2g'
+set wireless.$radio.channel='6'
+set wireless.$radio.htmode='HT20'
+set wireless.$radio.disabled='0'
+# HE is not available on the 8197F WMAC and asking for it makes hostapd emit
+# 6 GHz-capable IEs the driver will not fill in correctly.
+set wireless.$radio.he='0'
+set wireless.$radio.vht='0'
+set wireless.default_$radio='wifi-iface'
+set wireless.default_$radio.device='$radio'
+set wireless.default_$radio.network='lan'
+set wireless.default_$radio.mode='ap'
+set wireless.default_$radio.ssid='RX2L-2G'
+# Open on purpose: a PSK baked into a published image is a published
+# credential.  Set encryption='psk2' + key yourself, or ship it out-of-band
+# through build.sh's PROFILE= overlay, which never reaches the repo.
+set wireless.default_$radio.encryption='none'
+commit wireless
+EOF
+
+# --------------------------------------------------------------------- MAC
+apmib=$(dd if="$(find_mtd_part CFG 2>/dev/null)" bs=8192 skip=1 count=8 2>/dev/null |
+	 tr '\0' '\n')
+wlan2g_mac=$(printf '%s\n' "$apmib" | sed -n 's/^HW_WLAN1_WLAN_ADDR=//p' |
+	head -n1 | tr -d ' \r')
+
+case "$wlan2g_mac" in
+	[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+		wlan2g_mac=$(printf '%s' "$wlan2g_mac" | sed 's/../&:/g; s/:$//' | tr 'A-F' 'a-f')
+	;;
+	*)
+		# Fallback: the relationship the 4.14 line measured on this unit
+		# (2.4 GHz AP MAC == LAN MAC + 4).  Only used if the apmib key is
+		# unreadable, so it can never override the factory value.
+		lan_mac=$(grep -ao 'TENDA\.lan_mac=[0-9A-Fa-f:]\{17\}' "$(find_mtd_part CFG 2>/dev/null)" 2>/dev/null |
+			head -n1 | cut -d= -f2 | tr 'A-F' 'a-f')
+		case "$lan_mac" in
+			[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f])
+				wlan2g_mac=$(macaddr_add "$lan_mac" 4) ;;
+			*) wlan2g_mac="" ;;
+		esac
+	;;
+esac
+
+[ -n "$wlan2g_mac" ] || exit 0
+uci -q set wireless.default_$radio.macaddr="$wlan2g_mac" && uci -q commit wireless
+
+exit 0

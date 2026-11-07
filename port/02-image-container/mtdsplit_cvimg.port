@@ -1,0 +1,482 @@
+================================================================================
+port/02-image-container/mtdsplit_cvimg.port
+Rootfs split decision for the RX2L Pro on the 6.18 / latest-OpenWrt base.
+Chosen option: (a) REBASE our mtdsplit_cvimg parser. Not fixed-partitions.
+================================================================================
+
+0. THE DECISION IN ONE PARAGRAPH
+--------------------------------------------------------------------------------
+Keep the cvimg split parser. It is three small overlay files on top of an
+OpenWrt framework that verifiably still exists on 6.18, the parse callback
+signature is byte-for-byte identical to the 4.14 one, and it buys the one
+property this port cannot get any other way: our factory image has the *same
+on-flash shape as a genuine Tenda KernelFS* (rootfs at exactly 16+len, nothing
+in between), so every install path the vendor's own code controls -- stage-1
+boot, the `cr6c`/`r6cr`-aware AUTOBURN/TFTP burn parser, `mtd write` of the
+container, `tendaupgrade` -- sees a layout it already accepts. fixed-partitions
+requires us to invent a padded kernel region, i.e. a shape no Tenda image has,
+and to pin the rootfs offset blindly before we know what a 6.18 kernel plus the
+rtl8192cd HAL actually compresses to. Cost of the choice: one out-of-tree
+parser (~250 lines, already written and already audited on this hardware) plus
+two lines in the mtdsplit Kconfig/Makefile.
+
+
+1. WHAT THE FRAMEWORK LOOKS LIKE ON 6.18 (verified against master today)
+--------------------------------------------------------------------------------
+Nothing here is assumed; all four were read out of openwrt/openwrt@master on
+2026-11-07:
+
+* `target/linux/generic/files/drivers/mtd/mtdsplit/` still exists and holds 24
+  files (mtdsplit.c, mtdsplit.h and 22 parsers). There is NO mtdsplit_cvimg.c
+  upstream -- it disappeared with the glinet boards, so this parser is ours.
+* The hook is `target/linux/generic/pending-6.18/400-mtd-mtdsplit-support.patch`
+  (8141 bytes). Its changes to *upstream kernel source* are exactly:
+    - drivers/mtd/Kconfig:              new menu "OpenWrt specific MTD options"
+                                        adding MTD_ROOTFS_ROOT_DEV (default y),
+                                        MTD_SPLIT_FIRMWARE (default y),
+                                        MTD_SPLIT_FIRMWARE_NAME ("firmware"),
+                                        and `source "drivers/mtd/mtdsplit/Kconfig"`.
+    - drivers/mtd/Makefile:             `obj-$(CONFIG_MTD_SPLIT) += mtdsplit/`
+    - drivers/mtd/mtdpart.c:            includes <linux/magic.h> and
+                                        "mtdsplit/mtdsplit.h"; moves the
+                                        part_parser list/spinlock under the
+                                        patch, adds
+                                        parse_mtd_partitions_by_type(),
+                                        run_parsers_by_type(), split_firmware(),
+                                        mtd_partition_split(), calls
+                                        mtd_partition_split() from
+                                        add_mtd_partitions() and from
+                                        mtd_add_partition(), and deletes the
+                                        now-duplicated static helpers.
+    - include/linux/mtd/mtd.h:          mtd_roundup_to_eb(),
+                                        mtd_rounddown_to_eb(),
+                                        mtdpart_get_offset().
+    - include/linux/mtd/partitions.h:   `enum mtd_parser_type` and the new
+                                        `.type` member of struct
+                                        mtd_part_parser.
+    - hack-6.18/420-mtd-support-OpenWrt-s-MTD_ROOTFS_ROOT_DEV.patch: in
+                                        add_mtd_device(), sets ROOT_DEV for a
+                                        partition whose name is "rootfs".
+  => the parser-selection rule the DTS must respect is unchanged from 4.14:
+     a DT partition named `firmware` *without* a `compatible` property gets the
+     MTD_PARSER_TYPE_FIRMWARE parsers run over it, and children created by
+     mtd_add_partition() are split recursively. Adding
+     `compatible = "..."` to our firmware node would silently disable the whole
+     mechanism -- same trap the toby base documents in rtl8197f_tenda_ac23.dts.
+* The callback prototype in 6.18 is still
+      int (*parse_fn)(struct mtd_info *, const struct mtd_partition **,
+                      struct mtd_part_parser_data *);
+  (partitions.h, untouched by the patch apart from `.type`), and mtdsplit.h
+  still exports mtd_check_rootfs_magic()/mtd_find_rootfs_from()/
+  mtd_get_squashfs_len() with the same arguments. So the 4.14 body of our
+  parser compiles as-is.
+* `register_mtd_parser()` still exists in mainline partitions.h
+  (__register_mtd_parser + macro), so `subsys_initcall` registration is still
+  legal; master's own parsers have moved to `module_mtd_part_parser()`.
+
+
+2. THE FILE SET (3 overlay files + 2 config lines)
+--------------------------------------------------------------------------------
+files/target/linux/generic/files/drivers/mtd/mtdsplit/
+  mtdsplit_cvimg.c     NEW, section 3 below (the whole file, rebased)
+  Makefile           PATCHED, add one line to master's version
+  Kconfig            PATCHED, add one stanza to master's version
+
+⚠ Do NOT carry our 4.14 copies of Makefile/Kconfig over the new base. Those are
+whole-file overlays of a 19.07-era list; copying them onto master silently
+deletes eight parser entries that other targets in the tree still use
+(BCM63XX, CFE_BOOTFS, SEIL, ELF, H3C_VFS, MSTC_BOOT, OPENWRT_PROLOG, …) and the
+resulting kernel just fails to build those, or worse, an unrelated target loses
+its split. Patch master's files instead:
+
+--- a/target/linux/generic/files/drivers/mtd/mtdsplit/Makefile
++++ b/target/linux/generic/files/drivers/mtd/mtdsplit/Makefile
+@@ -18,3 +18,4 @@ obj-$(CONFIG_MTD_SPLIT_ELF_FW) += mtdsplit_elf.o
+ obj-$(CONFIG_MTD_SPLIT_H3C_VFS) += mtdsplit_h3c_vfs.o
+ obj-$(CONFIG_MTD_SPLIT_MSTC_BOOT) += mtdsplit_mstc_boot.o
+ obj-$(CONFIG_MTD_SPLIT_OPENWRT_PROLOG) += mtdsplit_owrt_prolog.o
++obj-$(CONFIG_MTD_SPLIT_CVIMG_FW) += mtdsplit_cvimg.o
+
+--- a/target/linux/generic/files/drivers/mtd/mtdsplit/Kconfig
++++ b/target/linux/generic/files/drivers/mtd/mtdsplit/Kconfig
+@@ -119,3 +119,11 @@ config MTD_SPLIT_OPENWRT_PROLOG
+ 	bool "OpenWrt executable prolog-based parser"
+ 	depends on MTD_SPLIT_SUPPORT
+ 	select MTD_SPLIT
++
++config MTD_SPLIT_CVIMG_FW
++	bool "Realtek cvimg (cr6c/cs6c) based firmware partition parser"
++	depends on MTD_SPLIT_SUPPORT
++	select MTD_SPLIT
++	help
++	  Splits a Realtek cvimg "firmware" partition into kernel + rootfs using
++	  the IMG_HEADER_T len field: the rootfs starts at exactly 16 + len.
+
+Target kernel config (rtl8197f/config-6.18, alongside the existing
+CONFIG_MTD_ROOTFS_ROOT_DEV / CONFIG_MTD_SPLIT_FIRMWARE which the 400-patch
+defaults to y):
+
+  CONFIG_MTD_SPLIT_CVIMG_FW=y
+  CONFIG_MTD_ROOTFS_ROOT_DEV=y
+  CONFIG_MTD_SPLIT_FIRMWARE=y
+  # CONFIG_MTD_SPLIT_SQUASHFS_ROOT is not set
+      ^ deliberately OFF, same as the primary base: the rootfs partition stays
+        "everything from 16+len to the end of firmware", and mount_root carves
+        rootfs_data out of its tail. Enabling the squashfs root parser would
+        trim the partition to squashfs bytes_used and leave the overlay area as
+        an unlabelled hole that mount_root does not own.
+
+DTS: partition@40000 label "firmware", reg <0x40000 0xf80000>, NO compatible
+property (RX2LPRO.dts already satisfies all three; keep it that way).
+
+
+3. THE REBASED PARSER
+--------------------------------------------------------------------------------
+Delta from files/target/linux/generic/files/drivers/mtd/mtdsplit/
+mtdsplit_cvimg.c (4.14 version, dated 2026-11-07) is small and each hunk is
+numbered here:
+
+  D1  kzalloc -> kcalloc                            (master style, no behaviour
+                                                    change)
+  D2  header sanity: check retlen, and bound
+      16 + len <= master->size instead of only
+      len <= master->size                            (a len that passes the old
+                                                    check can still point the
+                                                    read past the end)
+  D3  rootfs_offset >= master->size rejection      (off-by-one: an offset equal
+                                                    to the size yields a
+                                                    zero-length rootfs)
+  D4  keep subsys_initcall() + register_mtd_parser()
+      instead of master's module_mtd_part_parser().
+      Reason, concrete to this board: mtd_partition_split() only sees parsers
+      that are already on the list, and the partition walk happens when the
+      SPI-NOR device is added, i.e. from the sheipa-spi / spi-nor probe.
+      module_driver()/builtin_driver() register at device_initcall (level 6),
+      the same level the platform drivers register at, so the ordering becomes
+      link-order-dependent. subsys_initcall (level 4) is strictly earlier than
+      any of those probes, which is what every OpenWrt mtdsplit parser did
+      before the macro conversion and what this target needs. This is the ONE
+      behavioural difference from master's parsers and it is deliberate.
+  D5  no changes to the offset logic. The 2026-11-07 fix (try 16+len exact
+      first, then ALIGN(16+len,4), then the 0xa0000/4 KiB scan) is the part
+      that makes this board boot: cvimg's len is payload+2 and the payload is
+      only 2-byte aligned, so on this container the superblock sits at an
+      offset like 0x3c0812, which ALIGN(...,4) walks straight past and which a
+      4 KiB-step scan can never reach. Keep it verbatim.
+
+/*
+ *  Copyright (C) 2013 Gabor Juhos <juhosg@openwrt.org>
+ *  Copyright (C) 2017 Weijie Gao <hackpascal@gmail.com>
+ *  Copyright (C) 2026 rx2l-pro-openwrt contributors (cvimg split for RTL8197F)
+ *
+ *  This program is free software; you can redistribute it and/or modify it
+ *  under the terms of the GNU General Public License version 2 as published
+ *  by the Free Software Foundation.
+ *
+ *  Splits a Realtek cvimg ("cr6c"/"cs6c") firmware partition into
+ *  kernel + rootfs. The rootfs offset comes from the 16-byte IMG_HEADER_T
+ *  len field rather than from a magic scan, because len is what the vendor
+ *  stage-1 uses as its copy length and cvimg puts the squashfs superblock
+ *  at exactly 16 + len. Verified byte-exactly against this board's own
+ *  KernelFS dump and two decrypted vendor images.
+ */
+
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/sizes.h>
+#include <linux/mtd/mtd.h>
+#include <linux/mtd/partitions.h>
+#include <linux/byteorder/generic.h>
+
+#include "mtdsplit.h"
+
+#define CVIMG_SEARCH_LIMIT	SZ_2M
+#define CVIMG_MIN_ROOTFS_OFFSET	0xa0000
+#define CVIMG_ROOTFS_ALIGNMENT	SZ_4K
+
+#define SIGNATURE_LEN		4
+
+#define FAKE_ROOTFS_IDENT	"FAKE"
+#define FAKE_ROOTFS_IDENT_SIZE	4
+#define FAKE_ROOTFS_IDENT_OFS	4
+#define FAKE_ROOTFS_SIZE_OFS	16
+
+#define CVIMG_NR_PARTS		2
+
+enum data_type {
+	DATA_UNKNOWN,
+	DATA_KERNEL,
+	DATA_KERNEL_WITH_ROOTFS
+};
+
+struct signature {
+	enum data_type	type;
+	const char	*sig;
+};
+
+/*
+ * cr6c is what this board's stage-1 accepts and what a cvimg "firmware"
+ * payload emits; cs6c is the kernel-only sibling (also accepted by the
+ * loader). cr6b/cs6b/csys/csro are the older cvimg.c signatures, kept so the
+ * parser still recognises a sibling container -- note that OUR loader
+ * refuses cr6b/cs6b outright, so listing them here is parser tolerance, not
+ * bootability.
+ */
+const static struct signature sig_known[] = {
+	{ .type = DATA_KERNEL,		.sig = "cs6b" },
+	{ .type = DATA_KERNEL,		.sig = "cs6c" },
+	{ .type = DATA_KERNEL,		.sig = "csys" },
+	{ .type = DATA_KERNEL_WITH_ROOTFS, .sig = "cr6b" },
+	{ .type = DATA_KERNEL_WITH_ROOTFS, .sig = "cr6c" },
+	{ .type = DATA_KERNEL_WITH_ROOTFS, .sig = "csro" },
+};
+
+struct img_header {
+	unsigned char signature[SIGNATURE_LEN];
+	unsigned int start_addr;
+	unsigned int burn_addr;
+	unsigned int len;
+};
+
+static enum data_type signature_type(const char *sig)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(sig_known); i++)
+		if (!memcmp(sig, sig_known[i].sig, SIGNATURE_LEN))
+			return sig_known[i].type;
+
+	return DATA_UNKNOWN;
+}
+
+static int mtd_find_cvimg_rootfs_from(struct mtd_info *mtd,
+				      size_t from,
+				      size_t limit,
+				      size_t *ret_offset,
+				      enum mtdsplit_part_type *type)
+{
+	size_t offset;
+	int err;
+
+	for (offset = from; offset < limit;
+	     offset = ALIGN(offset + CVIMG_ROOTFS_ALIGNMENT,
+			    CVIMG_ROOTFS_ALIGNMENT)) {
+		err = mtd_check_rootfs_magic(mtd, offset, type);
+		if (err)
+			continue;
+
+		*ret_offset = offset;
+		return 0;
+	}
+
+	return -ENODEV;
+}
+
+static int mtdsplit_parse_cvimg(struct mtd_info *master,
+				const struct mtd_partition **pparts,
+				struct mtd_part_parser_data *data)
+{
+	struct img_header hdr;
+	size_t hdr_len, retlen;
+	size_t temp_offset, rootfs_offset, aligned;
+	struct mtd_partition *parts;
+	char ident[FAKE_ROOTFS_IDENT_SIZE];
+	u32 fake_rootfs_size;
+	int err;
+
+	hdr_len = sizeof(hdr);
+	err = mtd_read(master, 0, hdr_len, &retlen, (void *)&hdr);
+	if (err)
+		return err;
+	if (retlen != hdr_len)				/* D2 */
+		return -EIO;
+
+	/* D2: the field is what the stage-1 copy length is derived from, so a
+	 * header that names bytes past the partition is always corrupt. */
+	if (be32_to_cpu(hdr.len) > master->size - sizeof(hdr))
+		return -EINVAL;
+
+	/*
+	 * The old single candidate was ALIGN(sizeof(hdr) + hdr.len, 4).
+	 * That is wrong for the Tenda RX2L Pro container and can silently miss
+	 * our own images too: cvimg writes len = payload_size + 2 with the
+	 * payload aligned to 2 bytes only, and puts the 2-byte checksum
+	 * immediately after the payload, so the rootfs starts at exactly
+	 * sizeof(hdr) + len -- NOT on a 4-byte boundary. Measured on this
+	 * board's KernelFS: len = 0x3c0802, superblock at 0x3c0812, and
+	 * ALIGN(0x3c0812, 4) = 0x3c0814 is two bytes past it. Whether an image
+	 * hits the aligned candidate then depends on the kernel size modulo 4,
+	 * i.e. the split would work one build and not the next; the 4 KiB-step
+	 * scan fallback cannot rescue it either, because an offset like
+	 * 0x3c0812 is never 4 KiB aligned.
+	 *
+	 * So: exact offset first, then the 4-aligned candidate for containers
+	 * that pad their payload, then the scan.
+	 */
+	temp_offset = sizeof(hdr) + be32_to_cpu(hdr.len);
+
+	switch (signature_type(hdr.signature)) {
+	case DATA_KERNEL:
+	case DATA_KERNEL_WITH_ROOTFS:
+		err = mtd_check_rootfs_magic(master, temp_offset, NULL);
+		if (!err) {
+			rootfs_offset = temp_offset;
+			break;
+		}
+
+		/* containers that pad the payload to 4 bytes instead of 2 */
+		aligned = ALIGN(temp_offset, sizeof(uint32_t));
+		if (aligned != temp_offset &&
+		    !mtd_check_rootfs_magic(master, aligned, NULL)) {
+			rootfs_offset = aligned;
+			break;
+		}
+
+		err = mtd_find_cvimg_rootfs_from(master, CVIMG_MIN_ROOTFS_OFFSET,
+						 master->size, &rootfs_offset,
+						 NULL);
+		if (err)
+			return err;
+
+		err = mtd_read(master, rootfs_offset + FAKE_ROOTFS_IDENT_OFS,
+			       FAKE_ROOTFS_IDENT_SIZE, &retlen, ident);
+		if (err)
+			return err;
+		if (retlen != FAKE_ROOTFS_IDENT_SIZE)
+			return -EIO;
+
+		if (!memcmp(ident, FAKE_ROOTFS_IDENT, FAKE_ROOTFS_IDENT_SIZE)) {
+			err = mtd_read(master, rootfs_offset + FAKE_ROOTFS_SIZE_OFS,
+				       sizeof(fake_rootfs_size), &retlen,
+				       (void *)&fake_rootfs_size);
+			if (err)
+				return err;
+
+			fake_rootfs_size = ntohl(fake_rootfs_size);
+
+			err = mtd_check_rootfs_magic(master,
+					rootfs_offset + fake_rootfs_size, NULL);
+			if (!err) {
+				rootfs_offset += fake_rootfs_size;
+				break;
+			}
+
+			err = mtd_find_cvimg_rootfs_from(master,
+				ALIGN(rootfs_offset + fake_rootfs_size,
+				      CVIMG_ROOTFS_ALIGNMENT),
+				master->size, &rootfs_offset, NULL);
+			if (err)
+				return err;
+		}
+
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (rootfs_offset >= master->size)		/* D3 */
+		return -EINVAL;
+
+	parts = kcalloc(CVIMG_NR_PARTS, sizeof(*parts), GFP_KERNEL);	/* D1 */
+	if (!parts)
+		return -ENOMEM;
+
+	parts[0].name = KERNEL_PART_NAME;
+	parts[0].offset = 0;
+	parts[0].size = rootfs_offset;
+
+	parts[1].name = ROOTFS_PART_NAME;
+	parts[1].offset = rootfs_offset;
+	parts[1].size = master->size - rootfs_offset;
+
+	*pparts = parts;
+	return CVIMG_NR_PARTS;
+}
+
+static struct mtd_part_parser mtdsplit_cvimg_parser = {
+	.owner		= THIS_MODULE,
+	.name		= "cvimg-fw",
+	.parse_fn	= mtdsplit_parse_cvimg,
+	.type		= MTD_PARSER_TYPE_FIRMWARE,
+};
+
+/* D4: subsys_initcall, not module_mtd_part_parser -- see the delta list. */
+static int __init mtdsplit_cvimg_init(void)
+{
+	register_mtd_parser(&mtdsplit_cvimg_parser);
+	return 0;
+}
+
+subsys_initcall(mtdsplit_cvimg_init);
+
+/* Keep sig_known[] in sync with files/tools/firmware-utils/src/cvimg.c's own
+ * sig_known[] table: the writer and the parser must agree on which 4-byte
+ * strings mean "kernel + rootfs in this container".
+ */
+
+
+4. WHY NOT fixed-partitions (what would break, and what it would cost)
+--------------------------------------------------------------------------------
+rx23302 can use fixed-partitions because its flash has *separate* kernel and
+rootfs partitions at fixed offsets and its vendor loader wants the rootfs at a
+fixed address anyway. On this board:
+
+a) mtd3 is ONE partition (0x40000..0xfc0000) holding container+rootfs+overlay,
+   and the genuine stock shape puts the superblock at 16+len = 0x3c0812 -- an
+   offset only a parser can know. fixed-partitions would force us to pad the
+   kernel region to a chosen erase-aligned constant and then ship a container
+   with padding after its checksum. The loader tolerates that (it never reads
+   past `len`), but the file stops looking like any Tenda image: the vendor's
+   AUTOBURN/burn parser keys "Find sqhs" off the container, and the shape we
+   would be betting on is untested.
+b) The padding choice is a blind bet on a kernel we have not built yet. 6.18 +
+   rtl8192cd + rtl8197f-eth + flow offload LZMA'd lands somewhere in
+   3.5-5 MiB; pick 0x400000 and one config change over 4 MiB bricks every
+   image; pick 0x600000 and we permanently lose 2 MiB of a 15.5 MiB window to
+   filler. mtdsplit has no constant to revisit.
+c) sysupgrade: with a fixed split, writing the whole firmware partition is
+   wrong unless the padding is exact, so platform_do_upgrade has to split the
+   writes (rx23302 does: erase kernel, write rootfs, write kernel last). That
+   also throws away the property that sysupgrade.bin == factory-cr6c.bin byte
+   for byte, i.e. one more image to keep in sync and one more way to flash a
+   half-written set. Under mtdsplit, default_do_upgrade's single
+   `get_image | mtd write - firmware` is correct by construction.
+d) root device: unchanged either way -- hack-6.18/420 makes the partition
+   *named* "rootfs" the ROOT_DEV, and mtdsplit creates that name. The 4.14 port
+   already depends on it (there is no `root=` in the DT bootargs); the risk
+   that dependency documents (VFS: Unable to mount root fs on
+   unknown-block(0,0)) is the same for both options, so it is not a tie-breaker.
+e) Upstream-purity: fixed-partitions avoids a kernel patch. That is real, but
+   the patch is not ours to maintain alone -- it sits on a framework OpenWrt
+   keeps alive for ath79/ramips/bmips/bcm47xx, and the 6.18 callback signature
+   is identical to 4.14's, so the maintenance surface is one file whose
+   interface has been stable for a decade.
+
+If the rebase is ever rejected (e.g. the split stops appearing in /proc/mtd
+because of an SPI-NOR/OF-node change), the fallback is fully specified: pad
+`append-kernel | rx2lpro-pad-to-KERNELPART` to a fixed 0x500000, declare
+kernel/rootfs/rootfs_data partitions at 0x40000/0x540000/…, replace
+platform_do_upgrade with the rx23302 three-step write, and teach
+tools/check-cr6c.py the fixed rootfs offset instead of the derived one.
+
+
+5. HOW TO PROVE IT ON THE ROUTER (no writes involved)
+--------------------------------------------------------------------------------
+First boot through RAM (initramfs image, loader `XMOD` + `J:`) or after a
+flashed image, over serial only:
+
+  cat /proc/mtd
+      -> must show, inside "firmware":
+         mtdN "kernel"  size 0x<len+16>
+         mtdN "rootfs"  size 0xf80000-<that>
+  dmesg | grep -i 'cvimg\|partitions found on MTD'
+      -> "2 cvimg-fw partitions found on MTD device firmware"
+     If it says "unrecognised partition table" or only "firmware" exists, the
+     parser never registered (D4) or the firmware node acquired a `compatible`
+     property (section 1).
+  ls /dev/mtdblock*; mount | grep squashfs; cat /proc/cmdline | tr ' ' '\n' | grep root=
+      -> root= must be MTDBLOCK for the "rootfs" partition; that is
+         CONFIG_MTD_ROOTFS_ROOT_DEV firing on the name, i.e. risk #2 of
+         README's first-boot checklist.

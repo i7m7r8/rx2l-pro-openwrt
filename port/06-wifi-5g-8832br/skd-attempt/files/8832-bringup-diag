@@ -1,0 +1,118 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# 8832-bringup-diag -- read-only triage for the RTL8832BR on RTL8197F.
+# Modeled on /tmp/rebase-base target/linux/realtek/base-files/usr/sbin/wr1500-wifi6-diag,
+# extended to separate the three failure modes we expect (see README.md sec. 4).
+#
+# HARD RULES, both learned the expensive way:
+#   * Never read a MMIO address to "see if it answers". A wrong BAR gives an
+#     unrecoverable MIPS data-bus exception (that is exactly how the 6.6
+#     attempt died inside mac_ax_ops_init). Config space only.
+#   * Never `ifconfig wlan0 up` / `iw phy add interface` here. On this driver
+#     a hang survives reboot and clears only with 10+ s of no power.
+# No UCI wireless state, no keys, no MACs are collected.
+set -u
+
+BOARD=$(cat /tmp/sysinfo/board_name 2>/dev/null || echo unknown)
+DEST=/tmp/8832-diag
+ARCHIVE=0
+[ "${1:-}" = '--archive' ] && ARCHIVE=1
+
+mkdir -p "$DEST"
+{
+	echo "date_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+	echo "board=$BOARD"
+	uname -a
+	echo "of_display_name=$(cat /proc/device-tree/compatible 2>/dev/null | tr '\0' ' ')"
+} > "$DEST/host.txt"
+
+# ---- 1. BAR / IORESOURCE ----------------------------------------------------
+# Expect exactly one endpoint, 10ec:b832, whose BAR2 is 64-bit MEM starting at
+# bus==CPU 0x19000000 with len >= 0x100000, and PCI_COMMAND bit 2 (Memory
+# Enable) set. The RTL8197F has a fixed outbound aperture and does NOT translate:
+# bus address must equal CPU physical address.
+{
+	echo '=== pci devices ==='
+	for d in /sys/bus/pci/devices/*; do
+		[ -d "$d" ] || continue
+		echo "dev=$d"
+		for f in vendor device class irq enable resource driver; do
+			[ -r "$d/$f" ] || continue
+			echo "-- $f"; cat "$d/$f"
+		done
+		echo "-- config space (BAR0..BAR5, command, intx)"
+		hexdump -C -v -s 0x00 -n 0x40 "$d/config" 2>/dev/null || \
+			dd if="$d/config" bs=1 skip=0 count=64 2>/dev/null | hexdump -C
+	done
+	echo '=== host windows (bus addr must equal cpu addr) ==='
+	grep -E '18c00000|19000000|pci' /proc/iomem 2>/dev/null
+	echo '=== ranges as the kernel parsed them ==='
+	for n in /proc/device-tree/*/pcie*/ /proc/device-tree/*/*/pcie*/; do
+		[ -d "$n" ] || continue
+		echo "node=$n"
+		[ -r "$n/ranges" ] && echo '  ranges:' && hexdump -C "$n/ranges"
+		[ -r "$n/status" ] && echo "  status=$(cat $n/status | tr -d '\0')"
+		[ -r "$n/interrupts" ] && echo '  interrupts:' && hexdump -C "$n/interrupts"
+	done
+} > "$DEST/bar.txt" 2>&1
+
+# ---- 2. IRQ / MSI -----------------------------------------------------------
+# This root complex has no MSI (per realtek,rtl8197f-pcie.yaml and the vendor
+# BSP), so INTx on CPU line 5 is the only working route -- stock proves it:
+# "5: 968696 MIPS 5 rtk_wifi6".
+{
+	echo '=== /proc/interrupts ==='
+	cat /proc/interrupts
+	echo '=== expect a MIPS line 5 owned by rtk_wifi6 once probe succeeds ==='
+	echo '=== msi_bus (must be absent/empty on this SoC) ==='
+	ls /sys/bus/pci/devices/*/msi_bus 2>/dev/null || echo 'no msi_bus attribute'
+	echo '=== interrupt-names / of irq for the host bridge ==='
+	for n in /proc/device-tree/*/pcie*/; do
+		[ -d "$n" ] || continue
+		echo "node=$n"
+		for p in interrupts interrupt-parent interrupt-names; do
+			[ -r "$n/$p" ] && { echo "-- $p"; hexdump -C "$n/$p"; }
+		done
+	done
+} > "$DEST/irq.txt" 2>&1
+
+# ---- 3. timer softirq / driver state ---------------------------------------
+{
+	echo '=== modules ==='
+	grep -E 'rtk_wifi6|cfg80211|compat' /proc/modules || echo 'rtk_wifi6 not loaded'
+	echo '=== loaded but no wiphy == probe returned early or died in init ==='
+	iw dev 2>&1 || echo 'iw missing'
+	echo '=== phy presence ==='
+	ls /sys/class/ieee80211/ 2>/dev/null || echo 'no ieee80211 class'
+	echo '=== driver proc surface (if PROC_DEBUG enabled) ==='
+	ls /proc/net/rtk_wifi6/ 2>/dev/null || echo 'no /proc/net/rtk_wifi6'
+	echo '=== timer softirq evidence ==='
+	cat /proc/softirqs 2>/dev/null | head -3
+	grep -c . /proc/softirqs >/dev/null 2>&1
+	echo '-- workqueue/timer kthreads:'
+	ps w 2>/dev/null | grep -E 'ksoftirqd|kworker' | grep -v grep
+	echo '-- timer_list head:'
+	head -20 /proc/timer_list 2>/dev/null || echo 'no /proc/timer_list'
+} > "$DEST/timer.txt" 2>&1
+
+# ---- 4. the log lines that actually discriminate ---------------------------
+dmesg > "$DEST/dmesg-full.txt" 2>&1
+grep -Ei 'rtl8197f-pci|realtek.*pci|link up|link training|BAR|resource|ioresource|msi|intx|interrupt|rtk_wifi6|rtl8832|8832|Data bus|Adxl|bus error|Unable to handle kernel paging request|do_IRQ|run_timer_softirq|call_timer_fn|timer|firmware|dl_fw|Load FW|efuse|RFE|PHL|os_pci_read8|request_irq|pci_alloc_irq' \
+	"$DEST/dmesg-full.txt" | tail -200 > "$DEST/dmesg.txt"
+
+echo "wrote $DEST/{host,bar,irq,timer,dmesg}.txt"
+echo
+echo "Verdict hints (see skd-attempt/README.md section 4 for the full table):"
+echo "  BAR:      'Data bus error'/'Adxl' in os_pci_read8 at 0xb90000?? AND"
+echo "            BAR2 in bar.txt not equal to 0x19000000 -> window/ATU problem,"
+echo "            driver never got as far as firmware."
+echo "  IRQ:      probe reached 'WR1500/RX2L BAR2 verified' then request_irq error"
+echo "            code or 'invalid PCI INTx routing' -> interrupt map, not MMIO."
+echo "  TIMER:    firmware downloaded ('Load FW RAM code OK'), probe returned,"
+echo "            then trace mentioning run_timer_softirq/call_timer_fn -> the"
+echo "            vendor timer init bug; stop here, do not reload repeatedly."
+if [ "$ARCHIVE" = 1 ]; then
+	tar -czf /tmp/8832-diag.tar.gz -C /tmp 8832-diag
+	echo "/tmp/8832-diag.tar.gz"
+fi
+exit 0

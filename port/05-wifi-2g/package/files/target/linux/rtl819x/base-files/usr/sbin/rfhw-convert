@@ -1,0 +1,154 @@
+#!/bin/sh
+#
+# rfhw-convert — apply THIS board's 2.4 GHz RF calibration to the vendor
+# rtl8192cd HAL, from the Tenda apmib text store.
+#
+#   rfhw-convert <netdev>            apply (quiet, best-effort per key)
+#   rfhw-convert --dump <netdev>     print the set_mib pairs, apply nothing
+#   rfhw-convert --group 0|1         which apmib radio group to read (default 1)
+#
+# WHY THIS EXISTS.  Stock RX2L Pro does exactly this in three steps, in
+# /etc_ro/init.d/rcS:
+#
+#     NMTD=$(grep CFG /proc/mtd | awk -F : '{print $1}')
+#     dd if=/dev/"$NMTD" of=/etc/wlan_rfhwdata count=8192 ibs=8 skip=1
+#     blank=$(grep HW_XCAP_WLAN0_AX /etc/wlan_rfhwdata && echo 0 || echo 1)
+#     if [ "$blank" -eq 1 ]; then dd if=/etc/wlan/.wlan_rfhw.cfg of=/etc/wlan_rfhwdata; fi
+#     /bin/rfhw_convert
+#     chmod +x /tmp/rfhw.sh
+#     /tmp/rfhw.sh
+#
+# `count=8192 ibs=8 skip=1` is 8192 blocks of EIGHT bytes from block 1, i.e.
+# 64 KiB read from flash offset 8 — not 8192 bytes; see calibration.md §1.
+# /bin/rfhw_convert is a 79-entry lookup table (decoded in calibration.md §2)
+# that turns those `HW_*` keys into `/bin/iwpriv <if> set_mib <name>=<value>`
+# lines and writes /tmp/rfhw.sh.  We reproduce the behaviour, not the binary:
+# the destination names (`xcap`, `thermal1`, `pwrlevelCCK_A`, ...) are real
+# rtl8192cd MIB keys, present in the driver's own table, so the same words go
+# into the same driver on 6.18.
+#
+# WHAT CHANGED vs stock: no /etc/wlan_rfhwdata (never write to flash-backed
+# /etc on a 4+8 MiB part), no /tmp/rfhw.sh chmod'd and executed by a shell —
+# we read the mtd chardev straight into a here-doc and call the ioctl
+# directly.  /bin/iwpriv does not exist in current OpenWrt (wireless-tools is
+# gone from the packages feed), so the ioctl goes through /usr/sbin/rtlmib,
+# which is the same SIOCDEVPRIVATE+1 the driver's own set_mib handler serves
+# (8192cd_ioctl.c: RTL8192CD_IOCTL_SET_MIB).
+#
+# Radio-group naming, because it is a trap and the vendor contradicts itself:
+# /etc_ro/eth_name_conf.txt says wl2_4:wlan0 while RouterCfm.cfg says
+# wlan0_band=5.  The apmib HW_* namespace sides with RouterCfm: the *group-1*
+# keys are the 2.4 GHz rate tables — HW_WLAN1_TX_POWER_CCK_A and
+# HW_WLAN1_TX_POWER_HT40_1S_A are 14-entry (28 hex digit) arrays, and 14
+# channels only exist at 2.4 GHz.  Group 0's AX/TSSI/5G keys belong to the
+# RTL8832BR.  Default is therefore --group 1; the flag exists because this is
+# an inference from the partition, not a vendor statement.
+#
+# The value formats are also per-key, taken from the same dump:
+#   scalars (xcap, thermal1, ...)  DECIMAL  — "45", "30"
+#   arrays  (pwrlevelCCK_A, ...)   hex digit pairs, no separators, 28 chars
+#   MAC     (WLAN_ADDR)            12 hex chars, no separators
+# Passing an array as decimal or vice versa silently leaves the MIB at its
+# default, which is why the dump mode exists.
+
+set -e
+
+RTLMIB=/usr/sbin/rtlmib
+IFNAME=""
+GROUP=1
+MODE=apply
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--dump)  MODE=dump ;;
+		--group) GROUP="$2"; shift ;;
+		--) ;;
+		*) IFNAME="$1" ;;
+	esac
+	shift
+done
+
+[ -n "$IFNAME" ] || { echo "usage: rfhw-convert [--dump] [--group 0|1] <netdev>" >&2; exit 2; }
+
+# ---------------------------------------------------------------- source data
+apmib=""
+part=$(grep -m1 CFG /proc/mtd 2>/dev/null | awk -F: '{print $1}')
+if [ -n "$part" ] && [ -e "/dev/$part" ]; then
+	# 8192 x 8 bytes from offset 8 == ibs=8 count=8192 skip=1, stock's dd.
+	# The apmib is a NUL-separated key=value text store; turn the NULs into
+	# newlines so each record is a line.  Same data as stock's
+	# /etc/wlan_rfhwdata, just never written to disk.
+	apmib=$(dd if="/dev/$part" bs=8192 skip=1 count=8 2>/dev/null | tr '\0' '\n')
+fi
+
+if [ -z "$apmib" ]; then
+	echo "rfhw-convert: no CFG partition readable; radio will run on the" \
+		"driver's built-in PHY tables (see calibration.md §4)" >&2
+	[ "$MODE" = apply ] || exit 0
+	exit 0
+fi
+
+get() {
+	# $1 = apmib key WITHOUT the leading "HW_".  Last occurrence wins.
+	printf '%s\n' "$apmib" |
+		sed -n "s/^HW_$1=//p" |
+		tr -d ' \r' | tail -n1
+}
+
+# G is the apmib radio-group prefix.  Group 1 carries the 14-channel (2.4 GHz)
+# rate tables; group 0 carries the AX/5 GHz ones.  Keys of the form
+# HW_XCAP_WLANn_AX are deliberately NOT read here: they belong to the
+# RTL8832BR stack (rfhw_convert tags them flash_set, not set_mib).
+G="WLAN$GROUP"
+
+apply() { # name value
+	[ -n "$2" ] || return 0
+	if [ "$MODE" = dump ]; then
+		echo "set_mib $1=$2"
+		return 0
+	fi
+	$RTLMIB "$IFNAME" set "$1=$2" >/dev/null 2>&1 ||
+		echo "rfhw-convert: $IFNAME: set_mib $1 rejected" >&2
+	return 0
+}
+
+# -------------------------------------------------------------- 2.4 GHz group
+# scalar trim values
+apply xcap         "$(get ${G}_11N_XCAP)"
+apply thermal1     "$(get ${G}_11N_THER)"
+apply thermal2     "$(get ${G}_11N_THER_2)"
+apply thermal      "$(get ${G}_11N_THER_3)"
+apply tssi1        "$(get ${G}_11N_TSSI1)"
+apply tssi2        "$(get ${G}_11N_TSSI2)"
+apply tssi_enable  "$(get ${G}_11N_TSSI_ENABLE)"
+apply MIMO_TR_mode "$(get ${G}_MIMO_TR_MODE)"
+
+# TX power per channel group — these are the values that set radiated power.
+apply pwrlevelCCK_A     "$(get ${G}_TX_POWER_CCK_A)"
+apply pwrlevelCCK_B     "$(get ${G}_TX_POWER_CCK_B)"
+apply pwrlevelHT40_1S_A "$(get ${G}_TX_POWER_HT40_1S_A)"
+apply pwrlevelHT40_1S_B "$(get ${G}_TX_POWER_HT40_1S_B)"
+apply pwrdiffHT40_2S    "$(get ${G}_TX_POWER_DIFF_HT40_2S)"
+apply pwrdiffHT20       "$(get ${G}_TX_POWER_DIFF_HT20)"
+apply pwrdiffOFDM       "$(get ${G}_TX_POWER_DIFF_OFDM)"
+
+# Per-unit MAC.  Without this the cfg80211 path falls back to the driver's
+# hard-coded 00:e0:4c:cc:dd:01 (8192cd_cfg80211.c: rtk_fake_addr), i.e. every
+# unit in the country advertises the same BSSID base.
+#
+# Applied with `ip link set ... address`, NOT with set_mib hwaddr: that is the
+# form the 6.18 sibling port uses, and the one that respects the 5.17
+# const dev_addr / eth_hw_addr_set() rule (rx23302 compat_kernel.h spells that
+# out).  Only valid while the interface is down, which is why the caller is a
+# hotplug hook and not a post-up script.
+mac=$(get ${G}_WLAN_ADDR)
+case "$mac" in
+	[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+		macf=$(printf '%s' "$mac" | sed 's/../&:/g; s/:$//')
+		[ "$MODE" = dump ] && echo "ip link set $IFNAME address $macf" ||
+			ip link set dev "$IFNAME" address "$macf" 2>/dev/null ||
+			echo "rfhw-convert: $IFNAME: could not set factory MAC" >&2
+	;;
+esac
+
+exit 0

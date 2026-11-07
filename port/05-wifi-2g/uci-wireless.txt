@@ -1,0 +1,256 @@
+UCI WIRELESS CONFIG THAT WORKS ON THE 6.18 BASE — RX2L PRO 2.4 GHz
+==================================================================
+
+0. WHAT THIS ANSWERS
+    (a) which option names are valid on current OpenWrt for this radio,
+    (b) whether `band`/`htmode`/`he` on a `wifi-device` replace our 4.14
+        `type='rtl8192cd'` config,
+    (c) what `ifwireless` is and is not,
+    (d) the rewritten `/etc/uci-defaults/12_wireless-2g-rx2lpro`.
+
+    Everything marked VERIFIED is checked against the driver's own config
+    parser or a candidate tree's uci-defaults/handler; everything marked
+    OPEN is a question CI or the console has to answer. Sources are cited
+    inline as `<file>:<line>` against
+    /tmp/rebase/iptime-a2004mu-openwrt/package/kernel/rtl8192cd/src (= driver C,
+    adopted) and /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x (= tree A).
+
+1. HEADLINE: THE REWRITE IS NOT A LIKE-FOR-LIKE SUBSTITUTION
+    On 4.14 this radio had no wiphy. `wifi detect` enumerates cfg80211 wiphys,
+    so nothing created a `wifi-device` stanza, and
+    /etc/uci-defaults/12_wireless-2g-rx2lpro HAD to hard-create one with
+    `type='rtl8192cd'` (handled by files/.../lib/netifd/wireless/rtl8192cd.sh,
+    a WEXT + RTL8192CD.dat driver-specific handler). That file's own header
+    says so: "`wifi detect` only enumerates cfg80211 wiphys ... it has no
+    wiphy, so nothing generates its wifi-device stanza and an unseeded image
+    boots with NO wireless at all."
+
+    Adopted driver C is built WITH cfg80211/nl80211:
+      VERIFIED 8192cd_cfg80211.c:8111  wiphy = wiphy_new(&realtek_cfg80211_ops, ...)
+      VERIFIED 8192cd_cfg80211.c:8406-8409  fills wiphy->bands[IEEE80211_BAND_2GHZ]->ht_cap
+      VERIFIED 8192cd_cfg80211.c:7922/7924/7986  .add_virtual_intf,
+              .change_virtual_intf, .start_ap
+      VERIFIED package/kernel/rtl8192cd/Makefile  DEPENDS += kmod-cfg80211,
+              -DCONFIG_CFG80211_MODULE -DCONFIG_BACKPORTED_CFG80211_MODULE
+
+    => `wifi detect` now FINDS the radio. The seeder's job changes from
+    "manufacture a radio out of nothing" to "set sane first-boot defaults on a
+    radio that already exists". That is a strictly smaller and safer job, and
+    it means the seeder may eventually be deleted; until the fallback-AP
+    requirement is retired, keep it, but it must be idempotent and it must not
+    assume `type='rtl8192cd'`.
+
+2. THE CONFIG THAT WORKS (primary, cfg80211 route)
+
+    /etc/config/wireless, as `uci show` would print it:
+
+      config wifi-device 'radio0'
+              option type   'mac80211'
+              option path   '18640000.wifi'
+              option band   '2g'
+              option channel '6'
+              option htmode  'HT20'
+              option country 'ID'
+              option cell_density '0'
+              option disabled '0'
+
+      config wifi-iface 'default_radio0'
+              option device 'radio0'
+              option network 'lan'
+              option mode   'ap'
+              option ssid   'RX2L-2G'
+              option encryption 'none'
+              option macaddr 'xx:xx:xx:xx:xx:xx'
+
+    Note `path` is written as the platform device path only — the same shape
+    the 6.18 sibling trees use for a WMAC.  Tree A does NOT use a path at all
+    (see §5), and its radios are named by the driver, not by the bus, so on
+    tree A `option ifname 'wlan1'` replaces `option path`. Do not mix.
+
+    VERIFIED option-by-option against driver C's parser (its own cfg80211 ops
+    and MIB table, not guessed):
+
+      option type 'mac80211'
+        VERIFIED, and it is NOT a statement about the kernel's mac80211
+        datapath. netifd dispatches `type=X` to
+        /lib/netifd/wireless/X.sh, and upstream OpenWrt ships
+        /lib/netifd/wireless/mac80211.sh as the generic cfg80211 handler for
+        ANY wiphy, including out-of-tree drivers. Tree B states this about
+        itself in RD05_WLAN.md: "Die vorhandene mac80211-Konfigurationsschnittstelle
+        delegiert ... Der Typ `mac80211` ist hier die LuCI-/UCI-
+        Kompatibilitysschnittstelle; der eigentliche Treiber bleibt der
+        vendorbasierte rtl8192cd-cfg80211-Port. Dies stellt ihn nicht auf den
+        Kernel-mac80211-Datenpfad um."  Same words apply to us.
+
+      option band '2g'
+        OPEN on our base, but see §4. `band` is a hostapd-side concept
+        (HT/VHT/HE capability advertisement selection), consumed by
+        netifd's mac80211 handler, not by the driver. What the driver does
+        care about is the MIB `band`, an integer BITMASK — tree A's handler
+        spells the enum out (drv_rtl8192cd_* / 8192cd.h enum NETWORK_TYPE:
+        11b=BIT(0)=1, 11g=BIT(1)=2, 11a=BIT(2)=4, 11_N=BIT(3)=8, ...), and our
+        4.14 script already records "2.4 GHz 11b/g/n = 1|2|8 = 11" and "the
+        value '7' asks a 2.4 GHz radio for 5 GHz-only OFDM and drops 11n".
+        If netifd/mac80211.sh ends up driving the vendor MIB at all, that
+        translation lives in the handler, NOT in this option.
+
+      option htmode 'HT20'
+        VERIFIED as a legal value (HT20/HT40/HT40+/HT40-). On 2.4 GHz do not
+        use VHT*/HE* here: driver C fills 2 GHz ht_cap
+        (8192cd_cfg80211.c:8406-8409, 8415-8418) and 5 GHz vht_cap
+        (:8438) — the 2 GHz band object has no vht_cap on this HAL, and no HE
+        at all:
+          VERIFIED `grep he_cap 8192cd_cfg80211.c` -> no hits.
+        So this radio is 11n on 2.4 GHz. htmode HT40 is available and
+        tree A's measured default is HT20.
+
+      option he '1'/'0'  ->  DO NOT SET `he 1`.
+        OPEN: I could not find any HE-capable path in driver C: no `he_cap`,
+        and it depends on backported cfg80211 headers, not on mac80211.
+        Leaving `he` unset is the correct default: LuCI only shows HE if the
+        wiphy reports it, and asking the driver for HE via hostapd when it
+        does not implement `start_ap` with HE IEs will fail AP bring-up.
+        This is the answer to the orchestrator's "should the modern replacement
+        use band/htmode/he" question: **band yes, htmode yes, he no.**
+
+      option country 'ID'
+        This unit's factory value is `TD_WLAN0_WLAN_COUNTRY=ID` /
+        `TENDA.wlan0_countrycode=ID` (measured in mtd2 apmib dump; masked here
+        as a fact about the regulatory domain, not a secret). VERIFIED that
+        the driver has its own country table — tree A's handler comment:
+        "Драйвер при open сам сверяет countrystr со своей таблицей стран
+        (8192cd_11h.c, 100 стран) ... пустой countrystr -> FCC, каналы 1-11",
+        and its fallback `rtl_regdomain()` maps a code to a regdomain index
+        (US=1, JP=6, FR=4, IL=7, CN=11, else 12).
+        CAUTION: our 4.14 line deliberately used the driver's *numeric*
+        `country='1'` and the comment says the ISO code from CFG is NOT the
+        same namespace. With cfg80211, `country` is the ISO 2-letter form
+        passed to `regulatory_hint`/hostapd. Both forms exist; the one to ship
+        on the 6.18 base is the ISO form, and the first-boot test must check
+        `iw reg get` afterwards. If the driver ignores nl80211's country
+        request (likely: it has its own table), `country` becomes cosmetic and
+        channel limits come from the driver — that is a real OPEN item,
+        because a driver-side table that permits ch 1-14 on 2.4 GHz while
+        `iw reg get` says otherwise is a compliance bug, not a functional one.
+
+      option disabled '0'
+        Required: the stock OpenWrt detect writes `disabled 1`, and a
+        fallback-access-point board must not boot with the radio off.
+
+      wifi-iface option macaddr
+        Keep it OUT of the image and compute it, as now (per FACTS §0: no
+        per-unit MACs in the repo). The relation our 4.14 line measured
+        (2.4 GHz AP MAC = LAN MAC + 4) is reproduced in §7 of the uci-defaults
+        rewrite; keep the derivation, drop any literal.
+
+3. `ifwireless` — WHAT IT IS, AND WHY WE DO NOT USE IT
+    There is no `ifwireless` option in the vendor driver, and the trees we
+    mined do not use it: `grep -rn "ifwireless" /tmp/rebase/openwrt-rx23302
+    /tmp/rebase-base/target/linux/realtek /root/rx2lpro/rx2l-pro-openwrt`
+    -> no hits (verified, 2026-11-07).
+    In current upstream OpenWrt, `ifwireless` is a *mac80211.sh-side* section:
+    `config ifwireless` groups per-radio defaults that the handler reads
+    through netifd-wireless.sh's `wireless_generic_*` helpers; the long-standing
+    `config wifi-iface` remains what LuCI edits and what
+    `wireless.default_radio0` names. Tree A's own 527-line handler uses only
+    `wifi-device` + `wifi-iface` (its detect script writes
+    `wireless.radio${devidx}` and `wireless.default_radio${devidx}`), and tree
+    B's RD05 migration likewise talks about `wifi-device`/`wifi-iface` only.
+    DECISION: ship `wifi-device` + `wifi-iface` (section name
+    `default_radio0`), which both LuCI and `wifi` understand on every base we
+    are considering, and let `wifi detect`/mac80211.sh create any
+    `ifwireless` section it wants on first boot. If the rebase target turns
+    out to require `ifwireless` for something (it is where `key`/`ieee80211w`
+    can live in newer schemes), the seeder is the only file that has to change
+    — that is a 3-line patch, and it is called out as OPEN in REPORT.md.
+
+4. FALLBACK IF THE CFG80211 ROUTE FAILS ON FIRST BUILD
+    Plan B is tree A's model: WEXT/MIB control, custom handler, no hostapd.
+    The config then is exactly our 4.14 shape with tree A's names, VERIFIED
+    against tree A's own detect script
+    (target/linux/rtl819x/base-files/lib/wifi/rtl8192cd.sh):
+
+      config wifi-device 'radio0'
+              option type    'rtl8192cd'
+              option ifname  'wlan1'
+              option band    '2g'
+              option channel '6'
+              option htmode  'HT20'
+              option country 'ID'
+              option disabled '0'
+
+      config wifi-iface 'default_radio0'
+              option device 'radio0'
+              option network 'lan'
+              option mode 'ap'
+              option ssid 'RX2L-2G'
+              option encryption 'psk2+ccmp'
+              option key '...'
+
+    Differences that matter, all measured on tree A's hardware:
+      - `ifname` is REQUIRED on this route (there is no phy to resolve a path
+        from); `path` is meaningless there.
+      - `encryption 'psk2+ccmp'` — the driver authenticates in-kernel
+        (8192cd_psk.c), no wpad/hostapd. Tree A's handler refuses WPA3/SAE/OWE
+        and EAP outright (`rtl_vif_fail UNSUPPORTED_ENCRYPTION`).
+      - Tree A's handler *deliberately downgrades a radio-scoped set_mib to the
+        root interface only*, because writing `band` to a non-root VAP calls
+        init_beacon() on an interface with no beacon built yet and took the
+        router down: "Oops в init_beacon/update_tim и перезагрузка роутера
+        (поймано на стенде 06.10.2026)". Keep that behaviour if we adopt B.
+      - `option txpower` does not exist on route B; it is
+        `txpower_percent` (MIB `powerpercent`). Do not "fix" route B by adding
+        `txpower`, hostapd-style.
+
+5. BOARD-LEVEL WIRING THAT HAS TO HAPPEN FIRST (non-UCI)
+    - `option path '18640000.wifi'` only exists if the rebased DTS declares
+      the WMAC node. Tree A's SoC dtsi declares
+      `wifi2g: wifi@18640000 { compatible = "realtek,rtl8197f-wifi";
+      reg = <0x18640000 0x10000>; interrupts = <6>; status = "disabled"; }`
+      and the board file flips it to "okay" — VERIFIED in
+      patches/openwrt/0001-iptime-a2004mu-rtl8197f-support.patch (same
+      geometry, base A's rtl8197f.dtsi). Our staged fragment is
+      package/dts/RX2LPRO-wifi2g.dtsi.fragment. WITHOUT that node + a
+      driver-side probe, there is no wiphy and `wifi detect` yields nothing —
+      which is the exact failure mode our 4.14 tree had; the difference now is
+      that a seeder can no longer paper over it.
+    - The 4.14 "handler must exist" requirement (`/lib/netifd/wireless/
+      rtl8192cd.sh`) and the `/etc/Wireless -> /tmp` symlink for
+      RTL8192CD.dat: on route A of the driver C build the .dat is still read
+      (`8192cd_comapi.c:3614  #define CFG_FILE_PATH
+      "/etc/Wireless/RTL8192CD.dat"`), so KEEP the symlink line in the
+      uci-defaults. On route B it is dead weight but harmless.
+
+6. REWRITTEN uci-defaults SCRIPT
+    Staged at
+    package/files/target/linux/realtek/base-files/etc/uci-defaults/12_wireless-2g-rx2lpro
+    — key properties:
+      - keeps the board-name gate, unchanged (`rx2l-pro`);
+      - is IDEMPOTENT and DETECT-FIRST: it runs `wifi detect`-generated config
+        if any, otherwise writes its own, and never overwrites a section whose
+        `type` is already `mac80211` (user edits survive a re-flash of the same
+        image on a jffs2 overlay);
+      - `type 'mac80211'`, `band '2g'`, `htmode 'HT20'`, `channel '6'`,
+        `disabled '0'`; no `he`; no `txpower`;
+      - keeps `ln -s /tmp /etc/Wireless`;
+      - computes the radio MAC from LAN+4 instead of storing one;
+      - does NOT seed 5 GHz (unchanged from 4.14, and for the same documented
+        reason: a seeded radio with no driver makes netifd fail the whole
+        wireless bring-up);
+      - is a `/etc/uci-defaults/NN_name` file that must exit 0 so the
+        "already ran" marker is written.
+    It does NOT touch the calibration path — that is a separate staged hook
+    (`usr/sbin/rfhw-convert` + `etc/hotplug.d/net/99-rfhw-rx2lpro`) because the
+    apmib->MIB conversion must run whenever the interface is (re)created, not
+    once at first boot. See calibration.md.
+
+7. HOW TO TELL ON THE CONSOLE WHICH ROUTE YOU ARE ON   (put in README)
+      iw list | head -40            # phy + band caps -> route A (cfg80211)
+      ls /proc/wlan*/mib_all         # exists -> vendor HAL loaded at all
+      iwinfo wlan0 hwmode iwinfo wlan0 mode
+      ubus call network.wireless status
+      logread -e rtl8192cd
+    If `iw list` is empty but `/proc/wlan1/mib_all` exists, driver C loaded
+    without registering a wiphy (or the DT node is missing) — that is route B
+    territory: switch `type` to 'rtl8192cd' + `ifname`, add tree A's handler,
+    and re-test. Do not try to make `wifi detect` see a WEXT-only driver.

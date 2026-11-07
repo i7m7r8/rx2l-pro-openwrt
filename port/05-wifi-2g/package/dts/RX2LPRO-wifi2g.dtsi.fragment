@@ -1,0 +1,62 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR MIT
+ *
+ * RX2L Pro — 2.4 GHz WMAC node, to be merged into
+ *   files/target/linux/realtek/dts/RX2LPRO.dts
+ * (and the SoC-level part into the rtl8197f .dtsi of whichever base we rebase
+ *  onto; base A already has an identical node in target/linux/rtl819x/dts).
+ *
+ * WHY THIS IS NOT ON THE FIRST-BOOT CRITICAL PATH, YET
+ * ------------------------------------------------------
+ * The adopted driver does NOT probe this node.  The RTL8197F integrated MAC is
+ * not a PCIe function and has no platform driver: the HAL self-attaches from
+ * module init through a hardcoded entry in its own device table
+ * (8192cd_osdep.c, the CONFIG_WLAN_HAL_8197F && CONFIG_BAND_2G_ON_WLAN0 case:
+ *  TYPE_EMBEDDED, base BSP_WLAN_BASE_ADDR 0xb8640000, irq BSP_WLAN_MAC_IRQ 6,
+ *  both from rtl8197f_compat.h).  0xb8640000 is the uncached alias of
+ *  0x18640000, which is why the reg property below reads 0x18640000.
+ *
+ * So the node is here for three things the driver otherwise cannot get:
+ *   1. the interrupt.  Without a CPU-intc mapping the request_irq() in the
+ *      driver's own path is the only consumer, and it hardcodes 6; if the
+ *      ictl cascade ever needs to be described, this is where it goes.
+ *      NOTE: verify against the base tree's cpuintc numbering before trusting
+ *      <6> — base A uses interrupt-parent = <&cpuintc>, interrupts = <6>, and
+ *      its own comment calls IP6 "the BSP's direct WLAN interrupt".
+ *   2. an nvmem handle for calibration, which is what plan B needs (see
+ *      calibration.md §5) and what a future in-driver Tenda-apmib reader
+ *      would consume.
+ *   3. a status switch.  `status = "disabled"` in the .dtsi and "okay" in the
+ *      board file is the pattern base A uses; keep it so a bring-up build can
+ *      turn the radio off without touching the module.
+ *
+ * The `reg` alone does not enable anything — the block is clocked and taken
+ * out of reset by the bootloader on this board (stock brings the radio up from
+ * rcS with no clock driver), but if the rebased kernel ever gains an
+ * rtl8197f clock/reset provider, add `clocks`/`resets` here rather than
+ * papering over it in the driver.
+ */
+
+&{/soc} {
+	wifi2g: wifi@18640000 {
+		compatible = "realtek,rtl8197f-wifi";
+		reg = <0x18640000 0x10000>;
+		interrupt-parent = <&cpuintc>;
+		interrupts = <6>;
+		status = "okay";
+
+		/* PLAN B ONLY — leave commented for the adopted route.
+		 * iptime's 6.18 build looks the cell up by
+		 *   of_find_compatible_node("realtek,rtl8197f-wifi") ->
+		 *   of_nvmem_cell_get(np, "calibration")
+		 * and requires len == 0x640 (8192cd_cfg80211.c,
+		 * realtek_load_8197f_calibration).  Our flash holds no packed
+		 * H601 hw_setting blob anywhere (checked: no "H601" magic in any
+		 * of mtd1..mtd7), so a cell over the CFG partition would point at
+		 * a TEXT store and the loader would reject it.  Only after
+		 * calibration.md §5's converter writes a real blob does this pair
+		 * become valid.
+		 */
+		/* nvmem-cells = <&wlan2g_calibration>; */
+		/* nvmem-cell-names = "calibration"; */
+	};
+};

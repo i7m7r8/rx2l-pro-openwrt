@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Tenda RX2L Pro (label "RX2LProV1.0", internal board name AX2_PRO_V2)
+ * Realtek RTL8197F, MIPS 24Kc little-endian.
+ *
+ * VARIANT A of two: kernel 6.18 / target linux/rtl819x (base "A", the
+ * openwrt-rx23302 tree) with the EXTERNAL gigabit switch driven by the
+ * swconfig driver drivers/net/phy/rtl8367b.c.
+ *
+ * The sibling file rtl8197f_tenda_rx2lpro_dsa66.dts describes the same board
+ * for the 6.6 / DSA route (base "B", tobyw121/Openwrt_RTL). Pick one; they are
+ * mutually exclusive because the gpio cell numbering and the LAN/WAN naming in
+ * /etc/config/network differ. See gpio-numbering.md and
+ * switch-driver-analysis.md in this directory.
+ *
+ * ---------------------------------------------------------------------------
+ * EVIDENCE FOR EVERY NUMBER BELOW (all from dumps of THIS unit, no sibling
+ * board was copied):
+ *
+ *   /tmp/rx_dump/pulled/info.txt        cmdline "console=ttyS0,115200
+ *                                       root=/dev/mtdblock4", /proc/mtd,
+ *                                       /proc/partitions, "spi:m25p80"
+ *   /tmp/rx_dump/flash/mtdlayout.txt    per-mtd name/size/offset in DECIMAL
+ *                                       from /sys/class/mtd/mtdN (name, size,
+ *                                       offset) -- the partition table below
+ *   /tmp/rx_dump/logs/syslog/sys_info.log:370
+ *                                       MemTotal 115744 kB -> 128 MiB
+ *   /tmp/rx_dump/logs/syslog/sys_info.log:496-512
+ *                                       /proc/interrupts: "4 MIPS eth0",
+ *                                       "5 MIPS rtk_wifi6", "6 MIPS wlan1"
+ *   /tmp/rx_dump/flash/mtd2_CFG.bin     TENDA.lan_mac= at +0x22d, its 17-byte
+ *                                       ASCII value at +0x23b
+ *   /tmp/rx_dump/rootfs/x/etc_ro/gpio_conf
+ *                                       green LED gpio_id 54, red LED
+ *                                       gpio_id 57, reset+wps button gpio_id 33
+ *   /tmp/rx_dump/rootfs/x/etc_ro/eth_to_port_config.txt, .../default.cfg,
+ *   /tmp/rx_dump/RouterCfm.cfg          jack -> switch port map, lanvlan 1
+ *                                       0x15d 0x40, wanvlan1 2 0x142 0x40,
+ *                                       cpu1.phyid=6, cpu2.phyid=8
+ *   /tmp/work4/uboot_gz.bin +0x6a68/+0x6c34
+ *                                       our own U-Boot ORs 0x03300000 into the
+ *                                       mux register at 0xB8000034 (the SMI
+ *                                       pin mux; same encoding as toby's
+ *                                       "pinctrl-single,bits = <0x34 0x03300000
+ *                                       0x0ff00000>")
+ * ---------------------------------------------------------------------------
+ */
+
+/dts-v1/;
+
+#include "RTL8197F.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	/*
+	 * "Tenda RX2L Pro" is not decoration: realtek_board_detect() in
+	 * files/target/linux/realtek/base-files/lib/realtek.sh matches the
+	 * /proc/cpuinfo `machine` line against *"RX2L Pro". The 4.14 tree fills
+	 * that line from this `model`; if a 6.18 rtl819x kernel does the same,
+	 * changing this string without changing realtek.sh leaves
+	 * /tmp/sysinfo/board_name unset, board.d/02_network falls through its
+	 * case, and no LAN or WAN interface is ever created.
+	 */
+	compatible = "tenda,rx2l-pro", "tenda,ax2-pro-v2", "realtek,rtl8197f-soc";
+	model = "Tenda RX2L Pro";
+
+	aliases {
+		serial0 = &serial0;
+	};
+
+	/*
+	 * 128 MiB. Measured, not inherited: stock /proc/meminfo says
+	 * MemTotal 115744 kB, which is 128 MiB minus the kernel's own
+	 * reservations (SDMA/phytd buffers, page tables, kmsg). Do NOT write
+	 * 0x7000000 here because 115744 kB looks like 113 MiB -- that number is
+	 * what is left over, not what is on the board. The neighbouring
+	 * RTL8197F designs (RX23302, AC23) ship 64 MiB; this one does not, and
+	 * taking their value would halve our RAM for nothing.
+	 */
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x8000000>;
+	};
+
+	chosen {
+		/*
+		 * console=ttyS0,115200 -- read straight off this board's
+		 * /proc/cmdline (info.txt). 115200, not the 38400 the
+		 * RX23302 base uses.
+		 *
+		 * root= is deliberately NOT set: stock passes
+		 * root=/dev/mtdblock4 and OpenWrt finds its squashfs through
+		 * mtdsplit instead. Carrying the stock root= over would pin us
+		 * to a mtd index that our own partition node changes.
+		 *
+		 * Hardware NAT is deliberately NOT armed from the command line
+		 * either (no `hwnat=1`): on this SoC family enabling the ASIC
+		 * path before the tables are warm breaks the datapath, so it is
+		 * armed from userspace after the switch comes up.
+		 */
+		bootargs = "console=ttyS0,115200";
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * -----------------------------------------------------------------
+	 * LEDs and keys are DELIBERATELY left out and both children are
+	 * status = "disabled". Read gpio-numbering.md before enabling them.
+	 *
+	 * Stock /etc_ro/gpio_conf drives them through the vendor
+	 * /sys/devices/virtual/misc/ugw_gpio/gpio_base/ catalog and names the
+	 * lines by the vendor BSP_GPIO index, which is NOT the number the
+	 * kernel gpio chip in this base uses:
+	 *
+	 *   green "sys" LED   gpio_index 0  gpio_id 54   -> H? see below
+	 *   red LED           gpio_index 7  gpio_id 57   -> PEFGH bit 25
+	 *   reset button      gpio_index 32 gpio_id 33   -> PEFGH bit 1
+	 *   wps button        gpio_index 33 gpio_id 33   -> PEFGH bit 1 (same!)
+	 *
+	 * The decoded mapping (proof chain in gpio-numbering.md) is
+	 * line = port*8 + pin with A=0..H=7, and this base splits that space
+	 * into two 32-line chips: line < 32 -> &gpio0 <line>, line >= 32 ->
+	 * &gpio1 <line - 32>. So 54 -> &gpio1 22 (G6), 57 -> &gpio1 25 (H1),
+	 * 33 -> &gpio1 1 (E1).
+	 *
+	 * Two things must be true before these nodes are switched on:
+	 *   1. 54/57 are outputs of the vendor LED *pattern* engine
+	 *      (freq/pattern/start), i.e. the hardware blinks them; a plain
+	 *      gpio-leds node takes the line over and the stock timer effect
+	 *      disappears. That is acceptable, but it means the stock values
+	 *      only prove the lines are outputs, never their polarity. Assume
+	 *      ACTIVE_LOW (both RX23302 and AC23 Tenda boards use active-low
+	 *      LEDs on this SoC) and confirm with a multimeter or by watching
+	 *      the lamp before trusting default-state = "on".
+	 *   2. Line 33 (port E1) is not a free GPIO pad by default. The
+	 *      RX23302 note for the same line reads "пин E1 не отдаётся без
+	 *      pinmux" -- E1 stays on its peripheral function until the sysc
+	 *      mux register says otherwise, and we do not know which mux field
+	 *      covers it. Enabling this node blind can therefore do nothing at
+	 *      all, or steal a peripheral.
+	 *
+	 * And the real reason for "disabled": on the reference board an LED
+	 * node on the wrong pin held the external switch in reset. Getting
+	 * the switch up matters more than getting the lamps up.
+	 * -----------------------------------------------------------------
+	 */
+	leds: leds {
+		compatible = "gpio-leds";
+		status = "disabled";
+
+		// Kept as the intended shape, commented so nothing probes it.
+		// Line numbers are the vendor BSP_GPIO index from gpio_conf;
+		// the cell values are this base's numbering.
+		//
+		// led_green: sys {
+		//         label = "green:status";
+		//         gpios = <&gpio1 22 GPIO_ACTIVE_LOW>;   // line 54
+		//         default-state = "on";
+		// };
+		// led_red: red {
+		//         label = "red:internet";
+		//         gpios = <&gpio1 25 GPIO_ACTIVE_LOW>;   // line 57
+		// };
+	};
+
+	keys: keys {
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
+		status = "disabled";
+
+		// Stock registers ONE physical line (gpio_id 33, port E1) under
+		// two catalog slots, reset_btn at index 32 and wps_btn at index
+		// 33, with different act_time (80 vs 5). That is the classic
+		// Tenda combined Reset/WPS button: short press = WPS, long
+		// press = reset. One device tree button, not two.
+		//
+		//         reset {
+		//                 label = "reset";
+		//                 gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;  // line 33, E1
+		//                 linux,code = <KEY_RESTART>;
+		//                 debounce-interval = <60>;
+		//         };
+		//
+		// Polled, not interrupt-driven: the interrupt path of this
+		// gpio chip is untested on RTL8197F (the RX23302 board says the
+		// same), and gpio-keys-polled cannot be wrong about an edge.
+	};
+
+	/*
+	 * On-SoC 2.4 GHz WMAC. This base's RTL8197F.dtsi has no wmac node (the
+	 * RX23302 board does not use it), so it is declared here at the vendor
+	 * address BSP_WLAN_BASE 0xB8064000 -> cached 0x18640000.
+	 *
+	 * IRQ 6 is measured on THIS board, not borrowed: /proc/interrupts shows
+	 *   "6: 4711710 MIPS 6 wlan1"
+	 * and stock calls its 2.4 GHz interface wlan1 (the 5 GHz RTL8832BR is
+	 * wlan0 on IRQ 5). Note that is the reverse of the comment in
+	 * files/target/linux/realtek/base-files/etc/board.d/02_network, which
+	 * assigns CFG+0x5a5 wlan0_mac to 2.4 GHz; CFG+0x5a5 is
+	 * ...:C4 and the live EasyMesh report in kmsg calls ...:C4 the 5gMac,
+	 * so wlan0 = 5 GHz and wlan1 = 2.4 GHz. Flagged in REPORT.md for the
+	 * usersland track.
+	 */
+	wmac: wifi@18640000 {
+		compatible = "realtek,rtl8197f-wmac";
+		reg = <0x18640000 0x40000>;
+		interrupt-parent = <&cpuintc>;
+		interrupts = <6>;
+		/*
+		 * Enabled because it is harmless either way: with no driver
+		 * bound to this compatible nothing happens, and the 6.18
+		 * rtl8192fe HAL that the base uses for 2.4 GHz claims the radio
+		 * by PCI ID (10ec:818c / f192 / 8193 / 8179 / f812) rather than
+		 * by of_match, so this node is the address/IRQ bookkeeping that
+		 * the HAL will want when it grows a DT path.
+		 */
+		status = "okay";
+	};
+
+	/*
+	 * =====================================================================
+	 * External gigabit switch, swconfig route (rtl8367b.c, "switch0").
+	 * =====================================================================
+	 *
+	 * WHAT WE KNOW ABOUT OUR CHIP
+	 * Our U-Boot carries the vendor Switch v1.4 SDK with the strings
+	 * "8367C" and "8367D" and the calls
+	 *   rtk_port_rgmiiDelayExt_set(logical_cpu_port, TX_DELAY, RX_DELAY)
+	 *   rtk_port_macForceLinkExt_set(logical_cpu_port, mode, &mac_cfg)
+	 *   rtk_cpu_tagPort_set(logical_cpu_port, CPU_INSERT_TO_NONE)
+	 * so the CPU trunk is an *external interface* (EXTIF), not a GPHY, and
+	 * the exact silicon is still not settled offline. rtl8367b.c tells us
+	 * apart at runtime by reading register 0x1300 (chip number) and 0x1301
+	 * (chip version) after poking the magic 0x0249 into 0x13c2:
+	 *
+	 *   ver 0x1000          -> 8367RB      ver 0x1010 -> 8367R-VB
+	 *   num 0x6367 ver 0x0020 -> 8367RB-VB num 0x6367 ver 0x00A0 -> 8367S
+	 *   num 0x6642 ver 0x0010 -> 8367S-VB  num 0x6642 ver 0x0030 -> 8367D
+	 *
+	 * SMI LINES
+	 * MDC = SDK H0, MDIO = SDK G7, reset = H2. Those are vendor lines
+	 * 56/55/58, and in this base's two-chip numbering they are &gpio1
+	 * 24/23/26 -- exactly what the RX23302 board, which has the same SMI
+	 * wiring verified on hardware, uses. Our own U-Boot writes 0x03300000
+	 * into the mux register at 0xB8000034, which is the same pin-mux
+	 * programming the sibling Tenda boards encode as
+	 * <0x34 0x03300000 0x0ff00000>; this base has no pinctrl-single driver
+	 * and its gpio driver clears the CNR bit itself, so the property is
+	 * carried below as inert documentation (see the note on
+	 * realtek,smi-pinmux-bits) rather than as a fake pinctrl node.
+	 *
+	 * CPU PORT
+	 * Port 6. Proof from stock userspace, not from a neighbour's board:
+	 * every VLAN line in default.cfg carries the untagged mask 0x40 = bit
+	 * 6 -- lanvlan "1 0x15d 0x40", wanvlan1 "2 0x142 0x40" -- and
+	 * RouterCfm.cfg states cpu1.phyid=6 (cpu2.phyid=8 is the SoC's own
+	 * rtl865x CPU interface). For rtl8367b.c, RTL8367B_CPU_PORT_NUM is 5,
+	 * so cpu_port 6 selects EXTIF1, which is also what the toby AC23 board
+	 * concludes from the same 0x40 descriptor bit.
+	 */
+	switch0: switch {
+		compatible = "realtek,rtl8367b";
+
+		/* Bit-banged SMI on the gpio lines above. ACTIVE_HIGH is
+		 * correct here: these are driven as raw open-drain-ish clock
+		 * and data lines by rtl8366_smi.c with gpiod_set_raw_value(),
+		 * so the polarity handle is only a direction hint. */
+		sck-gpios = <&gpio1 24 GPIO_ACTIVE_HIGH>;	/* line 56, H0, MDC */
+		sda-gpios = <&gpio1 23 GPIO_ACTIVE_HIGH>;	/* line 55, G7, MDIO */
+		reset-gpios = <&gpio1 26 GPIO_ACTIVE_LOW>;	/* line 58, H2, ~RESET */
+
+		realtek,cpu-port = <6>;
+
+		/* Inert documentation of the vendor pin mux, see the note
+		 * above. On the 6.6/DSA variant this becomes a real
+		 * &pinmux + pinctrl-0 property that the driver consumes.
+		 */
+		realtek,smi-pinmux-bits = <0x34 0x03300000 0x0ff00000>;
+
+		/*
+		 * Required by rtl8367b.c on every chip EXCEPT RTL8367D:
+		 * rtl8367b_extif_init_of() reads "realtek,extif" and fails with
+		 * -EINVAL if it is absent or is not exactly 10 cells. Order is
+		 *   <cpu_port txdelay rxdelay mode force_mode txpause rxpause
+		 *    link duplex speed>
+		 * with mode 1 = RTL8367_EXTIF_MODE_RGMII, speed 2 = 1000 Mbps
+		 * (RTL8367_PORT_SPEED_1000), and txdelay/rxdelay written to
+		 * 0x1307 (EXT_RGMXF1): TX is a single bit at position 3, RX is
+		 * 3 bits at 0..7. The sibling RTL8367C boards state the RX
+		 * field is 300 ps per step, so rxdelay 5 = 1500 ps, the same
+		 * final value those boards use for the RGMII CPU trunk.
+		 *
+		 * Ignored if detect reports RTL8367D -- see init-regs below.
+		 */
+		realtek,extif = <6 0 5 1 1 1 1 1 1 2>;
+
+		/*
+		 * realtek,init-regs is INTENTIONALLY NOT IN THIS TREE.
+		 *
+		 * rtl8367b_init_post() applies it unconditionally, on both
+		 * code paths: for an RB/R-VB/S/S-VB/RB-VB chip it lands on top
+		 * of rtl8367b_initvals[]/rtl8367c_initvals[], and for an
+		 * RTL8367D chip on top of rtl8367d_chip_init(). A table
+		 * captured for a 8367D board therefore CORRUPTS an RB board and
+		 * vice versa, and we have not yet identified our silicon. The
+		 * RX23302 board (a verified 8367D, num 0x6642 ver 0x0030)
+		 * carries about 140 pairs of these, including RGMII force-link,
+		 * MAC-to-extif assignment, CPU tag and LED registers.
+		 *
+		 * How to obtain ours, read-only, on the stock kernel before
+		 * this variant is built -- see REPORT.md item 1:
+		 *   cat /proc/rtl865x/rtl_8367_chip_type      (which chip)
+		 *   echo 8367read <reg> > /proc/rtl865x/...   (register dump)
+		 *
+		 * Until then the honest content is the derivation sketch, kept
+		 * commented so dtc ignores it:
+		 *
+		 * realtek,init-regs = <
+		 *   // 1. EXTIF1 as RGMII, forced 1000/full, RX delay 5 steps
+		 *   //    DIS reg 0x1305: extif1 field = bits 7:4 (shift 4*1),
+		 *   //    value 1 = RTL8367_EXTIF_MODE_RGMII -> 0x0010
+		 *   0x1305 0x0010   0x1311 0x1076   0x1307 0x0005
+		 *   //    0x1311 = DI_FORCE_REG(1): FORCE_MODE|TXPAUSE|RXPAUSE|
+		 *   //    LINK|DUPLEX|SPEED_1000 = 0x1076, which is exactly the
+		 *   //    pair the RX23302 board's captured table writes
+		 *   // 2. MAC6 -> EXTIF1 (0x1d70-style MAC-select on the D
+		 *   //    family; on the RB family this is already in the
+		 *   //    driver's own table, hence "check against detect")
+		 *   // 3. CPU tag: none (rtk_cpu_tagPort_set(.., CPU_INSERT_TO_NONE)
+		 *   //    in our U-Boot), so the 4-byte tag path stays off
+		 *   // 4. LED: lanvlan/wanvlan1 untag mask 0x40 says jacks are
+		 *   //    driven by the switch, LED group mask over ports 0-4
+		 * >;
+		 */
+	};
+};
+
+/*
+ * This base's RTL8197F.dtsi ships both gpio chips disabled. The SMI bus is
+ * pure bit-banged gpio with no pinctrl driver here, so "okay" is all it takes.
+ */
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/*
+ * The SoC CPU interface. In this base rtl819x-eth.c is a PHYLINK driver with
+ * an internal rtl865x switch core, .cpu_port = 8, and it reaches the external
+ * RTL8367 through ONE internal port whose number it hard-codes for the board
+ * it was written against (its comments say "внутренний RTL8367D сидит на
+ * внутреннем порту 0" and mask 0x08/0x10 per jack). That is a driver-side
+ * change, not a device-tree one -- flagged in REPORT.md for the 04-eth-hwnat
+ * track, because on OUR topology the external switch hangs off the RGMII
+ * trunk the descriptor DP bits below select, and those bits are what the
+ * vendor SDK uses.
+ */
+&ethernet {
+	status = "okay";
+
+	/*
+	 * Carried so the two variants state the same datapath; rtl819x-eth.c
+	 * in this base does not parse them (the equivalent is compiled in),
+	 * while the 6.6 rtl8_4 DSA path does. Unknown properties are ignored,
+	 * so this documents rather than configures here.
+	 *
+	 * Values from stock: the untagged/trunk mask 0x40 = TD_DP bit 6 (the
+	 * 0x40 third field of lanvlan/wanvlan1), TD_DP_EXT bit 1 = 0x2 and
+	 * EXTSPA 0 -- the same triple toby's AC23/Lynx boards state for the
+	 * RTL8367 EXT1 CPU path. NOT the RD05/Xiaomi value 0x1, which is the
+	 * port-7/EXT1 layout.
+	 */
+	realtek,tx-port-mask = <0x40>;
+	realtek,tx-dp-ext = <0x2>;
+	realtek,tx-extspa = <0>;
+};
+
+&spi0 {
+	status = "okay";
+
+	flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+
+		/*
+		 * 15 MHz, the value the RX23302 board measured to be the
+		 * highest that reads correctly on THIS spi-sheipa driver:
+		 * the controller computes its divider as ceil(105 MHz / freq),
+		 * so asking for 41 MHz yields a real 35 MHz and the auto-mapped
+		 * reads come back garbled -- the kernel then cannot find its
+		 * squashfs where the boot loader reads it fine. Our own 4.14
+		 * tree says 41000000 and boots, which is why this is a "safe
+		 * first value, re-measure" decision for the image track, not a
+		 * fact about our flash.
+		 */
+		spi-max-frequency = <15000000>;
+
+		/*
+		 * The wrapper node is required: without a
+		 * compatible = "fixed-partitions" child the kernel makes up
+		 * its own partitions by parsing and the nvmem cells below have
+		 * no device-tree node to live on.
+		 */
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/*
+			 * Labels and offsets are the STOCK map, taken from
+			 * /sys/class/mtd (mtdlayout.txt) and /proc/mtd
+			 * (info.txt), converted to hex. Erase size is 0x10000
+			 * on every device.
+			 *
+			 *   mtd0 ALL        0x000000 .. 0xff0000  (16 MiB window)
+			 *   mtd1 Bootloader 0x000000 +0x030000
+			 *   mtd2 CFG        0x030000 +0x010000
+			 *   mtd3 KernelFS   0x040000 +0xf80000
+			 *   mtd4 RootFS     0x400812 +0xbbf7ee   <-- INSIDE mtd3
+			 *   mtd5 CFM        0xfc0000 +0x010000
+			 *   mtd6 CFM_BACKUP 0xfd0000 +0x010000
+			 *   mtd7 MISC2      0xfe0000 +0x010000
+			 *
+			 * Two consequences that are easy to get wrong:
+			 *  - RootFS is NOT a sibling partition, it is the
+			 *    squashfs window the vendor parser found inside
+			 *    KernelFS (0x400812 is not erase-aligned). It must
+			 *    not be declared here; mtdsplit recreates it.
+			 *  - The flash is a ~16 MiB part, not the 8 MiB that
+			 *    FACTS.md section 1 says. KernelFS alone is 0xf80000.
+			 *
+			 * NOTE for the image track: OpenWrt's mtdsplit triggers
+			 * on a partition *named* "firmware". Keeping the stock
+			 * label "KernelFS" here preserves the vendor naming
+			 * (and the sysupgrade SUPPORTED_DEVICES check reads
+			 * labels, not names); if we rely on the generic
+			 * squashfs splitter instead of our own cvimg parser,
+			 * rename the label to "firmware" -- do not add a
+			 * compatible to that partition, which would suppress
+			 * the split.
+			 */
+			partition@0 {
+				label = "Bootloader";
+				reg = <0x000000 0x030000>;
+				/* XIP at 0xb0000000; holds stage-1 + U-Boot and
+				 * the strap that gates disaster_web recovery.
+				 * Bricking this is unrecoverable without an
+				 * SOIC clip.
+				 */
+				read-only;
+			};
+
+			partition@30000 {
+				label = "CFG";
+				reg = <0x030000 0x010000>;
+				read-only;
+
+				/*
+				 * Per-unit identity lives here as ASCII
+				 * key=value lines, NOT as a binary MAC block.
+				 * Measured on mtd2_CFG.bin:
+				 *   +0x22d  "TENDA.lan_mac="          (14 chars)
+				 *   +0x23b  the 17-byte MAC text itself
+				 *   +0x5a5  TENDA.wlan0_mac  (5 GHz)
+				 *   +0x5c7  TENDA.wlan1_mac  (2.4 GHz)
+				 *
+				 * Why there is no compatible = "mac-base"
+				 * cell here, which the brief expected: an
+				 * nvmem mac cell is consumed by
+				 * of_get_mac_address_nvmem() (called by
+				 * rtl819x-eth.c at line 2044 of the 6.18 base)
+				 * as exactly ETH_ALEN raw bytes. This board
+				 * stores the address as twelve hex digits plus
+				 * five colons, and I searched all five dumped
+				 * partitions (mtd1/2/5/6/7) for the 6-byte
+				 * binary form of this unit's address, forward
+				 * and reversed, and it appears NOWHERE. A
+				 * mac-base cell over 0x23b would therefore
+				 * hand the driver the first six ASCII
+					 * characters of the address text (xx:xx:) -- a
+				 * syntactically valid, globally wrong MAC.
+				 *
+				 * So the cell below is declared as plain
+				 * bytes for whoever wants to parse them, and
+				 * the real extraction stays where it is
+				 * already correct and proven: the ASCII read
+				 * in board.d/02_network. Settling this for
+				 * good needs one read-only command on the
+				 * device, see REPORT.md item 2.
+				 */
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					lan_mac_ascii: lan-mac-ascii@23b {
+						reg = <0x23b 0x11>;	/* 17 ASCII bytes */
+					};
+
+					wlan2g_mac_ascii: wlan2g-mac-ascii@5d7 {
+						/* "TENDA.wlan1_mac=" at +0x5c7,
+						 * value at +0x5c7+16 = +0x5d7 */
+						reg = <0x05d7 0x11>;
+					};
+
+					wlan5g_mac_ascii: wlan5g-mac-ascii@5b5 {
+						/* "TENDA.wlan0_mac=" at +0x5a5,
+						 * value at +0x5a5+16 = +0x5b5 */
+						reg = <0x05b5 0x11>;
+					};
+				};
+			};
+
+			/* Everything the boot loader is allowed to jump to:
+			 * the cr6c container (16-byte header, LZMA payload,
+			 * 2-byte BE-u16 checksum, squashfs) and the overlay
+			 * after it. Single bank -- stock has no KernelFS1/2,
+			 * so there is no dual-bank rollback.
+			 */
+			partition@40000 {
+				label = "KernelFS";
+				reg = <0x040000 0xf80000>;
+			};
+
+			partition@fc0000 {
+				label = "CFM";
+				reg = <0xfc0000 0x010000>;
+				read-only;
+			};
+
+			partition@fd0000 {
+				label = "CFM_BACKUP";
+				reg = <0xfd0000 0x010000>;
+				read-only;
+			};
+
+			partition@fe0000 {
+				label = "MISC2";
+				reg = <0xfe0000 0x010000>;
+				read-only;
+			};
+		};
+	};
+};
+
+/*
+ * PCIe root complex for the 5 GHz RTL8832BR.
+ *
+ * Enabled and measured: /proc/interrupts on this unit shows the Wi-Fi 6
+ * driver on MIPS IRQ 5, and this base's RTL8197F.dtsi wires pcie0 to
+ * interrupts = <5> (BSP_PCIE_IRQ base + 5). The 2.4 GHz radio sits on IRQ 6
+ * with the WMAC and is NOT behind this bus.
+ *
+ * The reference clock is the 40 MHz fixed-clock already in RTL8197F.dtsi
+ * (read from 0xB8000008 bit 24 on that board; re-confirm for ours before
+ * trusting any RGMII/PERST timing that depends on it).
+ *
+ * RTL8832BR is NOT supported by mainline rtw89 (which knows 8851B/8852A/B/BT/C
+ * and 8922A/D), so no in-tree driver claims this card on either base; the
+ * 5 GHz path is track 06's problem. The child node is left commented out
+ * because we never saw this card's PCI ID in any dump -- do not bake a guess
+ * into the tree. One read-only command settles it (REPORT.md item 3).
+ */
+&pcie0 {
+	status = "okay";
+
+	/*
+	 * wifi@0,0 {
+	 *         compatible = "pci10ec,<DEVICE-ID-FROM-lspci-nn>";
+	 *         reg = <0x00000000 0 0 0 0>;
+	 * };
+	 */
+};

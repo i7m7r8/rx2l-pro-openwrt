@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# RX2L Pro: turn on software flow offloading in firewall4, and arm the two
+# rtl819x hardware-NAT services (gated off by default).
+#
+# Ported from base A:
+#   /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/base-files/etc/
+#   uci-defaults/05_enable_flow_offloading
+# with the board test replaced by lib/realtek.sh and the model numbers made
+# board-specific. Base A's measurement on an RTL8197F with an external
+# RTL8367D: software offload 857-880 Mbit/s, hardware NAT 926-929 Mbit/s at
+# 90-100% idle CPU (their comment cites the bench date). Same SoC, same
+# driver, so shipping `flow_offloading=1` on by default is justified;
+# `flow_offloading_hw` is NOT, for the reason base A gives and we inherit:
+# toggling router mode on a live box once dropped RX and wedged the unit hard
+# enough to need a power cycle (their rtl819x-hwnat-gate reload_service
+# comment, 2026-10-29). We do not repeat that in a default image.
+#
+# ★ This file is also where the two services get ENABLED. A script dropped
+# into base-files/etc/init.d/ is not started by anything -- /etc/rc.d/SNN
+# symlinks are created only by `enable` -- and a file that is absent from the
+# rc.d sequence fails silently: no log line, no error, just no offload.
+#
+# Runs on every first boot / config-preserving sysupgrade, and is idempotent.
+
+. /lib/functions.sh
+. /lib/realtek.sh
+
+rx2lpro_is_board || exit 0
+
+# Nothing to set if firewall4 is not in the image (a minimal/CI build). Selecting
+# firewall4 is a seed.config.new requirement, and its absence is the silent
+# kind -- see the defconfig gate in that file.
+uci -q get firewall.@defaults[0] >/dev/null || exit 0
+
+uci -q set firewall.@defaults[0].flow_offloading='1'
+
+# Only default hw off when the user has never expressed a choice: a
+# config-preserving sysupgrade must not clobber their tickbox. base A shipped
+# exactly this bug and fixed it (their 05:30-34).
+[ -z "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" ] &&
+	uci -q set firewall.@defaults[0].flow_offloading_hw='0'
+uci -q commit firewall
+
+# START order matters and is inherited verbatim from base A:
+#   rtl819x-hwnat       START=17  -> before firewall (19): fw4 must see the
+#                                    final set of /usr/share/nftables.d
+#                                    snippets at load time.
+#   rtl819x-hwnat-gate  START=95  -> after network (20): router mode rewrites
+#                                    the switch PVID/VLAN/MACCR1, and doing
+#                                    that before ifup produced a broken L2.
+[ -x /etc/init.d/rtl819x-hwnat ] && /etc/init.d/rtl819x-hwnat enable
+[ -x /etc/init.d/rtl819x-hwnat-gate ] && /etc/init.d/rtl819x-hwnat-gate enable
+
+# Same trap, same fix: nothing in base-files enables an init.d script it
+# ships. If this one is never symlinked, the unreachable-after-first-boot
+# fallback simply does not exist and the failure looks like a brick.
+[ -x /etc/init.d/rx2lpro-network-recovery ] &&
+	/etc/init.d/rx2lpro-network-recovery enable
+
+exit 0

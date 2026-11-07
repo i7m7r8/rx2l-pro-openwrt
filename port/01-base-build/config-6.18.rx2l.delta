@@ -1,0 +1,164 @@
+# Kernel-config delta: what our features need that the base target does NOT
+# already carry.
+#
+# Read the two files this is measured against before changing anything here:
+#   OVL rtl8197f config : /tmp/rebase/openwrt-rx23302/openwrt/target/linux/
+#                         rtl819x/rtl8197f/config-6.18          (251 lines)
+#   OVL target config   : .../rtl819x/config-6.18               (1 line: NVMEM)
+#   BASE generic config : openwrt@82e2e4f4 target/linux/generic/config-6.18
+# Line numbers below are from those files as pinned (BASE_REV 82e2e4f4,
+# OVERLAY_REV 80e62b6).
+#
+# WHERE THESE LINES BELONG
+#   Append the "ADD" block to OVL rtl8197f/config-6.18 (i.e. ship it as our
+#   whole-file replacement in files/target/linux/rtl819x/rtl8197f/config-6.18,
+#   and expect build.sh to report it as a clobbered overlay file).
+#   Anything that must WIN over that file goes in the seed as
+#   CONFIG_KERNEL_<SYM> instead: .config-level CONFIG_KERNEL_* knobs are
+#   injected after the target config merge and silently override it. That is
+#   where the 4.14 line kept crashlog off, and it is why the two CRASHLOG/PSTORE
+#   notes below are phrased as "no action" rather than as seed lines.
+#
+# ===========================================================================
+# ADD - symbols our own work needs, absent from OVL rtl8197f/config-6.18
+# ===========================================================================
+#
+# --- 1. rootfs split for a cr6c container (track 02 decides whether this is
+#         needed at all) ---------------------------------------------------
+# OVL ships NO cvimg parser: `grep -i cvimg` over their config-6.18 finds
+# nothing, and BASE's mtdsplit directory has no mtdsplit_cvimg.c either
+# (target/linux/generic/files/drivers/mtd/mtdsplit/ at 82e2e4f4 lists
+# bcm63xx..wrgg, no cvimg). Their board uses fixed-partitions instead.
+# Our KernelFS is one container whose squashfs offset is 16+len, UNALIGNED
+# (FACTS §4, README: 0x3c0812), so a fixed-partitions rootfs window only works
+# if the image recipe pins the kernel size; with mtdsplit the geometry is
+# discovered. Both are legitimate; if track 02 keeps the parser from our
+# files/target/linux/generic/files/drivers/mtd/mtdsplit/, these two lines are
+# what make it exist:
+CONFIG_MTD_SPLIT_CVIMG_FW=y
+# CONFIG_MTD_SPLIT_FIRMWARE_NAME is already "firmware" in BASE
+# (target/linux/generic/config-6.18:4120) - do NOT restate it, and note that
+# the parser only runs on a partition named exactly that (README risk #3).
+#
+# ★ HOW the parser gets into the kernel tree, because our 4.14 way is now a
+#   cross-target regression. BASE delivers the mtdsplit directory from
+#   target/linux/generic/files/drivers/mtd/mtdsplit/{Kconfig,Makefile}, and our
+#   files/ overlay replaces BOTH of those whole files with the 4.14-era
+#   versions: ours declares 16 config symbols, BASE declares 22, and the seven
+#   we would delete are MTD_SPLIT_{BCM63XX,CFE_BOOTFS,ELF,H3C_VFS,SEIL,
+#   MSTC_BOOT,OPENWRT_PROLOG}_FW (measured by diffing the two files at
+#   BASE_REV). mtdsplit is a GENERIC directory: dropping those breaks other
+#   targets' configs, not ours.
+#   The cheap fix is additive: keep only mtdsplit_cvimg.c in files/ (a new file,
+#   no conflict), delete our Kconfig/Makefile copies, and append the two
+#   stanzas with a patch. That works because the files/ copy happens BEFORE the
+#   patch dirs are applied - include/quilt.mk:92 defines
+#   kernel_files=$(foreach fdir,$(GENERIC_FILES_DIR) $(FILES_DIR),$(fdir)/.) and
+#   quilt.mk:96 copies it, while the generic backport/pending/hack and the
+#   target's own patches-6.18 are applied at quilt.mk:102-105.
+#
+# Already carried by OVL, do not duplicate: CONFIG_MTD_SPI_NOR=y (:113),
+# CONFIG_MTD_SPI_NOR_USE_4K_SECTORS=y (:114 - the symbol still exists in 6.18,
+# BASE generic:4111), CONFIG_MTD_ROOTFS_ROOT_DEV=y (:115, and BASE generic:4101),
+# CONFIG_MTD_SPLIT_FIRMWARE=y (:116), and CONFIG_MTD_SPLIT_SQUASHFS_ROOT is
+# deliberately off (:117) because that splitter puts rootfs_data right after the
+# squashfs body - exactly where the Tenda loader keeps its checksum. Keep it off
+# and say so: the same trap the rx23302 comment describes is ours verbatim.
+#
+# Our 4.14 subtarget config had CONFIG_MTD_M25P80=y. That symbol no longer
+# exists: BASE generic/config-6.18 has no MTD_M25P80 line at all (the SPI-NOR
+# chip layer was folded into MTD_SPI_NOR), so restating it would just be
+# dropped by the config sanitizer.
+#
+# --- 2. squashfs -----------------------------------------------------------
+# Nothing to add. BASE generic:6877 CONFIG_SQUASHFS=y and :6892
+# CONFIG_SQUASHFS_XZ=y, and the mangled-magic trick is a stock-kernel patch we
+# must NOT copy (FACTS §4, README risk #4): our kernel matches plain hsqs and
+# mtdsplit.c matches SQUASHFS_MAGIC.
+#
+# --- 3. switch + ethernet (FACTS §5) ---------------------------------------
+# Nothing to add for the RTL8367RB path: OVL already builds it IN, not as
+# modules - CONFIG_SWCONFIG=y (:208), CONFIG_SWCONFIG_LEDS=y (:209),
+# CONFIG_RTL8366_SMI=y (:230), CONFIG_RTL8367B_PHY=y (:231),
+# CONFIG_PHYLINK=y (:229), CONFIG_REALTEK_PHY=y (:227), CONFIG_PHYLIB=y (:179),
+# CONFIG_MDIO_BUS=y (:99), CONFIG_FWNODE_MDIO=y (:49), and the SoC ethernet
+# engine CONFIG_NET_RTL819X=y (:225).
+# ★ Because NET_RTL819X=y is built-in, there is NO kmod to select in the seed,
+#   and a built-in driver cannot link against a modular nf_flow_table. OVL
+#   measures 857-929 Mbit/s with exactly this arrangement plus
+#   kmod-nft-offload, so the first CI build is the check: if kconf warns or the
+#   link fails on net/flow_offload symbols, make CONFIG_NET_RTL819X=m and add
+#   the matching kmod package instead of patching around it.
+#
+# --- 4. LEDs (track 03 - only when the DTS declares them) ------------------
+# OVL has LED_TRIGGER_PHY=y (:96) but no LED driver at all. BASE leaves
+# CONFIG_LEDS_GPIO off (generic:3322). Our 4.14 subtarget config had it =y
+# after finding that an LED node without a provider binds nothing; the Tenda
+# pins are still unverified, and a wrong GPIO line held the switch in reset on
+# the reference board (README risk #9). Add it TOGETHER WITH the DTS nodes, not
+# before:
+#CONFIG_LEDS_GPIO=y            <- uncomment with track 03's led nodes
+#
+# --- 5. ramoops / pstore: leave OFF, on purpose ----------------------------
+# Nothing to add, and nothing to remove: BASE generic already has
+# # CONFIG_PSTORE is not set (generic:5155) and # CONFIG_PSTORE_RAM is not set
+# (:5162), and OVL does not enable it. That is the state the DIR-842 TX wedge
+# required (4.14 config-4.14: "pstore is OFF ENTIRELY... an attached ramoops
+# WEDGES CPU-originated frames"), so it is inherited, not re-litigated. If a
+# future experiment wants pstore anyway, it needs CONFIG_PSTORE=y +
+# CONFIG_PSTORE_RAM=y + CONFIG_PSTORE_CONSOLE=y AND a /reserved-memory node in
+# the DTS - config alone would be the silent half-fix.
+#
+# --- 6. symbolised oops on a board that has never booted --------------------
+# BASE generic ships # CONFIG_KALLSYMS is not set (generic:3181) and OVL keeps
+# DEBUG_INFO=y (:37) without it, i.e. a first oops prints addresses only. On
+# this platform the whole debugging method so far has been reading traces off
+# a serial line, and the 4.14 line's crashlog work was about SEEING the first
+# oops. Costs a few hundred KB of kernel; the container budget is 15.5 MiB of
+# KernelFS and the loader's own limit is the decompressed kernel (< 16 MiB,
+# FACTS §3), so this is affordable - but it is a size decision, so it is listed
+# rather than asserted:
+CONFIG_KALLSYMS=y
+#CONFIG_KALLSYMS_ALL=y         <- only if module symbols are actually needed
+#
+# --- 7. crashlog: no action, the feature is gone ---------------------------
+# The 4.14 seed's "# CONFIG_KERNEL_CRASHLOG is not set" cannot be ported
+# because there is nothing to switch off: BASE generic/config-6.18 has no
+# CONFIG_CRASHLOG line and target/linux/generic/hack-6.18/ carries no crashlog
+# patch (the 6xx range there is 650-netfilter-add-xt_FLOWOFFLOAD-target.patch).
+# Do not re-add the seed line: a symbol that no longer exists is the one seed
+# bug that shows up as nothing at all.
+#
+# --- 8. PCI, when 5 GHz is attempted (track 06 only) -----------------------
+# OVL ships the PCIe host code (files-6.18/arch/mips/pci/pci-realtek.c +
+# patches-6.18/0005-pci-realtek.patch, 0006-realtek-have-pci.patch) but leaves
+# PCI off: # CONFIG_PCI is not set (rtl8197f/config-6.18:244), with PCI_HCI=y
+# at :243 for the embedded 2.4 GHz radio. RTL8832BR is on PCIe, so track 06
+# will have to set at least:
+#CONFIG_PCI=y
+#CONFIG_PCI_REALTEK_HAS_PCI=y   <- name comes from 0006-realtek-have-pci.patch;
+#                                  re-read that patch before using this line
+#
+# ===========================================================================
+# GONE / RENAMED - 4.14 symbols with no 6.18 equivalent (do not port them)
+# ===========================================================================
+# CONFIG_MTD_M25P80=y        -> folded into CONFIG_MTD_SPI_NOR (no such line in
+#                               BASE generic/config-6.18)
+# CONFIG_RTL8192CD=m         -> replaced by the in-tree HAL: OVL :238-246
+#                               CONFIG_WLAN_HAL=y, WLAN_HAL_88XX=y,
+#                               WLAN_HAL_8197F=y, RTL8192FE_RX23302=y and the
+#                               WEXT block :247-250. Note their config-6.18:233
+#                               -237 comment: built IN, a driver that hangs in
+#                               rtl8192cd_init_one takes the boot with it.
+#                               Track 05 owns the choice of =y vs =m and the
+#                               board-specific RTL8192FE_* symbol name.
+# CONFIG_RTL8197F_WMAC=y     -> no such symbol here (0 hits in BASE tree); the
+#                               HAL above is the WMAC path now.
+# CONFIG_CRASHLOG /          -> gone, see §7.
+# CONFIG_KERNEL_CRASHLOG
+# CONFIG_NF_CONNTRACK_IPV4/6,-> removed in 6.x netfilter; OVL uses the unified
+# CONFIG_NF_NAT_IPV4 etc.      NF_CONNTRACK=y style lines (:152-161)
+# CONFIG_MIPS_CMDLINE_FROM_DTB=y stays (:106) - our DTS carries the chosen
+#                               bootargs, so the cmdline still comes from the
+#                               DTB, and CONFIG_CMDLINE from the loader is the
+#                               other half (LOADER_DATA in image/Makefile:34).

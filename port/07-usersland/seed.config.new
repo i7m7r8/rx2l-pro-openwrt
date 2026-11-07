@@ -1,0 +1,281 @@
+# =============================================================================
+# Build seed for the Tenda RX2L Pro — RECOMMENDED FOR THE 6.18 / master rebase
+# =============================================================================
+# Proposed replacement for ./seed.config once BASE_REPO/BASE_REV move to base
+# A (Elengal/openwrt-rx23302's upstream pin: openwrt @ 82e2e4f4, kernel 6.18,
+# target `rtl819x`). build.sh copies this file to .config and runs
+# `make defconfig`.
+#
+# *** FORMAT RULE, learned the hard way twice in this repo ***
+# A CONFIG_ line must be ALONE on its line. kconfig takes everything after
+# `=` as the value, so `CONFIG_FOO=y   # note` is not "y" and the symbol is
+# silently unset -- which is precisely the failure mode this file is trying to
+# prevent. Every annotation here is therefore a separate `#` line ABOVE the
+# symbol it describes.
+#
+# ★ THE SILENT-DROP TRAP, and the gate that kills it.
+#   `make defconfig` DELETES any CONFIG_ symbol that does not resolve at that
+#   moment: no warning, no error, image smaller and wrong, build green. This
+#   bit the 19.07 line once (CONFIG_PACKAGE_luci absent from the feeds-install
+#   list -> uhttpd went with it -> an image with no web UI). Add to build.sh
+#   immediately after `make defconfig`:
+#
+#     comm -23 <(grep -oE '^CONFIG_[A-Z0-9_]+(?==y$)' "$SEED" | sort) \
+#              <(grep -oE '^CONFIG_[A-Z0-9_]+(?==y$)' .config | sort) \
+#       | grep -v '^$' | tee /tmp/dropped.conf && \
+#       { echo "!!! seed symbols dropped by defconfig (see /tmp/dropped.conf)"; exit 1; }
+#
+#   Caveat whoever wires this: `# CONFIG_X is not set` lines must be excluded
+#   from the comparison (the grep above only collects `=y`), and a symbol the
+#   target ALREADY selects by default will survive, so a drop is always real.
+#   Second gate, on the artifact rather than the config:
+#     ls bin/packages/*/base/luci-base*.ipk >/dev/null || { echo "NO WEB UI"; exit 1; }
+#
+# VERIFICATION SOURCES cited below (all read-only, present on this machine):
+#   [A] /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/rx23302.diffconfig
+#       -- a real released master @82e2e4f4 build config. Any symbol listed
+#       there EXISTS in the new base plus its pinned feeds. Strongest evidence.
+#   [B] /tmp/rebase-base/package/<path> -- 24.10-era upstream tree; proves the
+#       upstream package directory and PKG_NAME (sparse checkout: only
+#       package/kernel, network, system, utils are present).
+#   [I] /tmp/rebase/iptime-a2004mu-openwrt/configs/a2004mu.config -- a second
+#       master @6e9fd1c3 (6.18.36) build config.
+#   [D] /tmp/rebase/iptime-a2004mu-openwrt/configs/feeds.buildinfo -- the
+#       commit-pinned feeds.conf syntax master expects.
+#   [K] /tmp/rebase/openwrt-rx23302/openwrt/target/linux/rtl819x/rtl8197f/config-6.18
+#       -- kernel symbols base A actually builds with (NOT to be put in this
+#       seed; listed so the handover to the kernel track loses nothing).
+# =============================================================================
+
+# ---- target ---------------------------------------------------------------
+# Changes with the base: realtek/rtl8197f (ggbruno 4.14) -> rtl819x/rtl8197f.
+# CONFIG_TARGET_realtek=y is a DIFFERENT target on master (big-endian RTL838x
+# managed switches) and must not come back: ARCH:=mipsel lives only in
+# target/linux/rtl819x/Makefile.
+CONFIG_TARGET_rtl819x=y
+CONFIG_TARGET_rtl819x_rtl8197f=y
+
+# Device symbol follows master's vendor_model naming -- the shape is proven by
+# [I] (`CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_iptime_a2004mu=y`). UNVERIFIED
+# until the image track renames Device/RX2LPRO -> Device/tenda_rx2lpro. If
+# defconfig drops THIS line the build quietly produces no image for our board.
+CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_tenda_rx2lpro=y
+
+# RAM-boot is the only safe iteration loop on a single-bank box.
+CONFIG_TARGET_ROOTFS_INITRAMFS=y
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+
+# ---- WiFi 5 GHz: NOT SELECTED, and the reason got stronger on the rebase ---
+# RTL8832BR (Wi-Fi 6) on PCIe. base A has no 8832/8852/rtw89 anywhere (grep
+# hits only phydm tables); iptime is rtw88 + RTL8822BE; mainline rtw89 covers
+# 8851B/8852A/B/BT/C + 8922A/D. The only 8832BR driver ever seen is the vendor
+# rtk_wifi6 SKD on a vendor 4.4 kernel (mr1500x). Do NOT add kmod-rtw88/rtw89
+# to "cover" it: an absent driver is invisible, a seeded wifi-device with no
+# driver is not -- netifd then fails the whole wireless bring-up, 2.4 GHz AP
+# included, and that AP is the documented second way in.
+
+# ---- WiFi 2.4 GHz: THE BIG CORRECTION TO THE OLD SEED ----------------------
+# The old seed's only wireless line was `CONFIG_PACKAGE_kmod-rtl8192cd=y`.
+# That symbol DOES NOT EXIST in base A: there the vendor HAL is an in-tree
+# kernel driver (drivers/net/wireless/rtl8192fe/Kconfig, CONFIG_WLAN_HAL /
+# WLAN_HAL_8197F / RTL8192FE_RX23302 in [K]), not a package. Selecting
+# kmod-rtl8192cd on the new base is exactly the silent-drop trap: defconfig
+# eats the line, the build stays green, the image has no radio, and the
+# wireless fallback access path is gone. The kernel symbols belong in the
+# subtarget config-6.18 (kernel track); what the SEED must select instead are
+# the two userspace halves of that same design, both real in base A:
+CONFIG_PACKAGE_rtlmib=y
+# ^ [A]-adjacent: /tmp/rebase/openwrt-rx23302/openwrt/package/utils/rtlmib/Makefile.
+#   base A's own note explains why: their kernel has no WEXT, so `iwpriv
+#   set_mib` does not exist and this tool talks SIOCDEVPRIVATE+1 directly.
+#   ⚠ Our shipped handler (/lib/netifd/wireless/rtl8192cd.sh) uses IFCONFIG +
+#   iwpriv-style set_mib against RTL8192CD.dat instead, so rtlmib is only
+#   needed if the driver lands without CONFIG_WEXT. Decide together with the
+#   kernel track's WEXT choice -- selecting it needlessly costs ~30 KB,
+#   NOT selecting it when the driver has no WEXT means no radio configuration
+#   at all. Verify on a RAM boot: `iwpriv wlan0 help` vs `rtlmib -h`.
+CONFIG_PACKAGE_iwinfo=y
+# ^ upstream dir [B] package/network/utils/iwinfo; base A patches that same
+#   Makefile (openwrt-upstream.patch) and adds 7 WEXT patches for rtl8192cd
+#   under its own package/network/utils/iwinfo/patches/. Without them LuCI
+#   and `iwinfo` cannot read a vendor-driver netdev: no SSID, no channel, no
+#   clients, "undefined dBm".
+
+# ---- switch / datapath ------------------------------------------------------
+# The 4.14 seed DROPPED swconfig ("nothing registers a swconfig agent"). On
+# base A that reversal is mandatory: it drives the external RTL8367RB-class
+# chip with the swconfig driver files-6.18/drivers/net/phy/rtl8367b.c and its
+# board selects both halves. See port/07-usersland/base-files/etc/board.d/
+# 02_network for the runtime dsa/swconfig/none decision this feeds.
+CONFIG_PACKAGE_swconfig=y
+# ^ [A] rx23302.diffconfig; upstream dir [B] package/network/config/swconfig.
+CONFIG_PACKAGE_kmod-swconfig=y
+# ^ UNVERIFIED AS A PACKAGE NAME. CONFIG_SWCONFIG=y in [K] means the target
+#   builds it into the kernel image, so the kmod package may not exist. If
+#   defconfig drops this line that is CORRECT, not a failure -- prove the real
+#   thing instead: `zcat build_dir/target-*/linux-*/linux-*/output?/*.kmod 2>/dev/null`
+#   or on the box `ls /sys/class/switch/`. Kept here so the intent survives.
+CONFIG_PACKAGE_kmod-nf-flow=y
+# ^ UNVERIFIED LOCALLY. Lives in package/kernel/linux/modules/*.mk, which is
+#   not in any sparse checkout on this machine. Verify in a full checkout:
+#   `grep -rl 'Define Package/kmod-nf-flow' package/kernel/linux/modules/`
+CONFIG_PACKAGE_kmod-nf-nat=y
+# ^ UNVERIFIED LOCALLY, same reason. Pulled in by firewall4 anyway.
+# NOT carried forward: kmod-ipt-offload. On master it is the iptables-side
+# offload and iptables is not in this image.
+
+# ---- firewall: firewall3/iptables -> firewall4/nftables --------------------
+# Largest blast radius on "is the box reachable", because firewall4's failure
+# mode is deny-all with a clean console.
+CONFIG_PACKAGE_firewall4=y
+# ^ [B] package/network/config/firewall4/Makefile, PKG_NAME:=firewall4.
+#   master's DEFAULT_PACKAGES already selects it for targets with
+#   @!TARGET_avm_profiles... don't rely on that; rely on the gate.
+CONFIG_PACKAGE_kmod-nft-offload=y
+# ^ UNVERIFIED LOCALLY (same Makefile search as kmod-nf-flow). This is what
+#   makes uci `firewall.@defaults[0].flow_offloading=1` (set by
+#   uci-defaults/05_enable_flow_offloading) do anything at all. Without it the
+#   option is accepted, nft accepts the ruleset, and NOTHING is offloaded --
+#   which reads exactly like "the perf work accomplished nothing".
+CONFIG_PACKAGE_nftables-nojson=y
+# ^ [B] package/network/utils/nftables (flavoured split: -nojson is the small
+#   variant). firewall4 drags it in; named so the size is deliberate.
+# Explicitly NOT selected: `firewall` (firewall3), iptables, kmod-ipt-*.
+# package/network/config/firewall [B] is firewall3 and the two must not
+# coexist in one image.
+
+# ---- web UI: the ucode stack -----------------------------------------------
+# The 19.07 pins in feeds.conf exist ONLY because master's luci-base needs
+# ucode, and ucode will not build against a 4.14-era base. On master this is
+# the normal path. Names that CHANGED vs the old seed:
+#   luci-app-opkg        -> luci-app-package-manager
+#   luci-mod-admin-full  -> still exists, but the content is now
+#                          luci-mod-{core,network,status,system}
+#   miniupnpd            -> split into miniupnpd-iptables / miniupnpd-nftables
+#                          (this split is WHY feeds.conf pinned openwrt-19.07)
+# Every line in this block is [A] -- verified in a released master build.
+CONFIG_PACKAGE_luci=y
+# ^ the meta-package. If `./scripts/feeds install` does not include `luci`,
+#   THIS is the symbol that vanishes and takes uhttpd with it.
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_cgi-io=y
+CONFIG_PACKAGE_rpcd=y
+CONFIG_PACKAGE_rpcd-mod-file=y
+CONFIG_PACKAGE_rpcd-mod-iwinfo=y
+CONFIG_PACKAGE_rpcd-mod-luci=y
+CONFIG_PACKAGE_rpcd-mod-rrdns=y
+CONFIG_PACKAGE_rpcd-mod-ucode=y
+CONFIG_PACKAGE_liblucihttp=y
+CONFIG_PACKAGE_liblucihttp-ucode=y
+CONFIG_PACKAGE_ucode-mod-html=y
+CONFIG_PACKAGE_ucode-mod-log=y
+CONFIG_PACKAGE_ucode-mod-nl80211=y
+CONFIG_PACKAGE_ucode-mod-rtnl=y
+CONFIG_PACKAGE_libiwinfo=y
+CONFIG_PACKAGE_libiwinfo-data=y
+CONFIG_PACKAGE_wifi-scripts=y
+# ^ upstream [B] package/network/config/wifi-scripts. Provides /sbin/wifi, and
+#   it is the reason /lib/wifi/rtl8192cd.sh (staged in base-files/) is now the
+#   ONLY mechanism that can enumerate our vendor radio. Its /sbin/wifi keeps
+#   `include /lib/wifi` + `detect_$driver` (:64-81) and retires `wifi detect`
+#   (:58-61) -- the 4.14 muscle memory "wifi detect > /etc/config/wireless"
+#   now exits 1 and writes nothing.
+# ⚠ LuCI + the vendor wifi driver is NOT free on master: LuCI probes features
+#   through hostapd, so for a wifi-device of type 'rtl8192cd' it offered "No
+#   Encryption" as the ONLY choice -- opening a WPA2 network's dialog and
+#   pressing Save silently OPENED it (base A found this on hardware
+#   2026-10-05). base A carries a LUCI FEED PATCH for exactly this:
+#     /tmp/rebase/openwrt-rx23302/openwrt/feeds-patches/luci-mod-network/
+#       100-rx23302-wireless-rtl8192cd.patch
+#   CI must apply it to the checked-out luci feed. That is a build-track change
+#   (feeds.conf + a patch step) and it is in REPORT.md "Needs from elsewhere".
+# NOT selected: qos-scripts. It exists [B] package/network/config/qos-scripts,
+# but it is iptables/socat-based and meaningless under nftables; the old seed
+# carried it with no measured reason.
+
+# ---- WAN + diagnostics ------------------------------------------------------
+CONFIG_PACKAGE_ppp=y
+CONFIG_PACKAGE_ppp-mod-pppoe=y
+# ^ [I] references both (there as `is not set`, which still proves the symbols
+#   resolve on master).
+CONFIG_PACKAGE_kmod-ppp=y
+CONFIG_PACKAGE_iperf3=y
+# ^ UNVERIFIED LOCALLY (packages feed; not present in [A] or [I]). Ubiquitous,
+#   but run `./scripts/feeds install iperf3` and check .config, do not assume.
+CONFIG_PACKAGE_tcpdump-mini=y
+# ^ UNVERIFIED LOCALLY. If it is gone on current feeds, the replacement is
+#   CONFIG_PACKAGE_tcpdump.
+CONFIG_PACKAGE_ethtool=y
+# ^ [I]. Needed for the PHYLINK bring-up questions (link, pause, and the
+#   RGMII rx/tx-delay effects) that the 4.14 base had no way to ask.
+CONFIG_PACKAGE_kmod-leds-gpio=y
+CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
+# ^ both from target/linux/rtl819x/Makefile DEFAULT_PACKAGES -- i.e. the
+#   target already provides them; kept as intent, harmless if duplicated.
+CONFIG_PACKAGE_uboot-envtools=y
+# ^ [I]. Only useful to READ the vendor env for `image_boot` (sysupgrade.md §4).
+#   /etc/fw_env.config does not exist for this flash map yet and a WRONG one
+#   makes `fw_setenv` scribble inside the Bootloader partition. Ship the
+#   package; do NOT ship a fw_env.config until the env offset is measured.
+#   ⚠ The failsafe path does not need this: preinit's failsafe gives a root
+#   shell on the LAN.
+
+# ---- IPv6 -------------------------------------------------------------------
+CONFIG_PACKAGE_odhcpd-ipv6only=y
+# ^ [I] (as `is not set`, because it is a DEFAULT package on master -- which
+#   is better news than "missing": the symbol resolves).
+CONFIG_PACKAGE_odhcp6c=y
+# ^ carried from the old seed; UNVERIFIED LOCALLY. Same default-package
+#   situation: if defconfig drops it, confirm the target already selects it
+#   rather than deleting the intent.
+
+# ---- wireless crypto --------------------------------------------------------
+# Our 2.4 GHz radio does WPA2-PSK IN-KERNEL (8192cd_psk.c) over WEXT/MIB, so it
+# needs NO wpad and NO iw. Do not add wpad while rtl8192cd is the only radio:
+# it is ~1.5 MB of a 15.5 MiB partition for a supplicant nothing calls, and the
+# 4.14 audit removed it for that reason. The moment a cfg80211 driver lands for
+# RTL8832BR this flips and both lines below become mandatory:
+#   CONFIG_PACKAGE_wpad-openssl=y
+#     ^ flavours confirmed in package/network/services/hostapd ([I] uses
+#       wpad-basic-mbedtls); UNVERIFIED that -openssl still exists on current
+#       master -- check `make package/network/services/hostapd/{dumpinfo,V}`.
+#   CONFIG_PACKAGE_iw=y
+#     ^ UNVERIFIED LOCALLY; it is in the packages feed.
+
+# ---- crashlog OFF (unchanged, still load-bearing) ---------------------------
+# OpenWrt's crashlog handler faults on this SoC family: crashlog_printf() dies
+# on a bogus access inside die(), then recurses ("Oops[#448]", PID 0,
+# task.stack=NULL), floods the console and hangs the boot, masking the real
+# crash. ★ This knob MUST live in the SEED and nowhere else: CONFIG_KERNEL_*
+# entries are injected AFTER target/linux/*/config-<ver> is merged, so
+# "# CONFIG_CRASHLOG is not set" inside the subtarget config is silently
+# overridden by the base default.
+# CONFIG_KERNEL_CRASHLOG is not set
+
+# ---- deferred, with the reason so nobody re-adds them blind ------------------
+# CONFIG_PACKAGE_luci-app-upnp=y        -- needs miniupnpd-nftables named
+#   explicitly (the feed split), is not a first-boot requirement, and every
+#   extra feed package is one more silent-drop candidate. Add after the
+#   firewall4 transition is proven on the bench.
+# CONFIG_PACKAGE_luci-i18n-base-ru=y     -- [A] ships ru; i18n is the first
+#   thing to cut if the image overflows (each is ~100-300 KB).
+# CONFIG_PACKAGE_kmod-rtw88* / rtl8822be-firmware -- WRONG CHIP (they came
+#   from the DIR-842 R1). Never resurrect as a "wifi might work" gesture.
+
+# ---- size budget ------------------------------------------------------------
+# The partition we write is 0xf80000 = 15.5 MiB MINUS the kernel payload, and
+# squashfs lands at 16+len (see sysupgrade.md §3). Measure, do not assume:
+#   ls -l bin/targets/rtl819x/rtl8197f/*sysupgrade.bin
+# If it overflows, cut in this order: luci-i18n-*, tcpdump-mini, iperf3 --
+# never firewall4, never swconfig, never wifi-scripts.

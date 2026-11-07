@@ -1,0 +1,34 @@
+# RTL8832BR RFE50 / AP_5G calibration manifest — Tenda RX2L Pro (AX2_PRO_V2)
+#
+# These files are NOT committed here: vendor RF data (same rule as
+# /tmp/rebase/mr1500x-openwrt README section 8). The build extracts them out of
+# the stock firmware image it was given and verifies them against this list.
+#
+# Source of truth for these hashes: our dumped stock rootfs,
+#   /tmp/rx_dump/rootfs/x/etc_ro/wlan/rtl8832bre/RFE50/
+# Measured 2026-11-07. All files are LF-only (CR count = 0), so no
+# $(SED) 's/\r//g' normalisation is needed (unlike the driver .c files).
+#
+# 12 of these 16 are byte-identical to the copies in
+# /tmp/rebase-base package/kernel/rtl8832br-wr1500 (Cudy WR1500 R76).
+# The 4 marked BOARD-SPECIFIC are not: RadioA/RadioB are the per-board
+# front-end gain tables and both TXPWR_ByRate files carry our own limits.
+# If a hash below stops matching, the extraction step is broken -- fail the
+# build rather than shipping someone else's power table.
+
+7ac5d832e9542dd84e96b4cac88ea969598aa6219da85afdd73ae55fb0f89e0e:PHY_REG.txt
+29a94695f044938778de739182d5ec7c1f3d5cb86b9682c79ae1e0d227b993cf:PHY_REG_GAIN.txt
+5426e285e60c3af8641821a210329f7cb62887ec1ec775b17b1ef836ee451230:RadioA.txt  # BOARD-SPECIFIC
+f456f35b92285ef19c4c3e8d56cc88a444414a5f23f06d01a9aa15969c5bd883:RadioB.txt  # BOARD-SPECIFIC
+48a7d1061f5d7471f212842e75df74450448ea8922b0e4c5c488384d4b4f963f:TXPWR_ByRate.txt  # BOARD-SPECIFIC
+0335f1aef6c6b0d726f1070498ea592ecaa5b8f8b12edb95c0536275ea32cac6:TXPWR_LMT.txt
+31134285c23d931de7389d5827f0d8d996add280440c40a2ac1949c783642ea9:TXPWR_LMT_RU.txt
+8e5c10bfc228da5364796961ae599d3fa8cbe3aa61b21e25e3106dc4b1ea7e68:TXPWR_TrackTSSI.txt
+820332547fe26b27b92492e99f8a42f62ff31938ddf47f33b6f1b7c9cbc65456:AP_5G/PHY_REG.txt
+f50c63561e394216c447d49bc32cd52fd2889cf7991d9ad1c38a84bb6bb001f2:AP_5G/PHY_REG_GAIN.txt
+54c4c30ce765826b1447d2fb955c80f5f68abfc74836afcfd22cf3fed700f3ea:AP_5G/RadioA.txt  # 37-byte stub, intentionally
+54c4c30ce765826b1447d2fb955c80f5f68abfc74836afcfd22cf3fed700f3ea:AP_5G/RadioB.txt  # 37-byte stub, intentionally
+b1516c01bd5521e421c60e8110d0e665ed002a29eda54e598a637bd5ec8dfa17:AP_5G/TXPWR_ByRate.txt  # BOARD-SPECIFIC
+28dc64f9d9453ac14652129a680e0b6ed8b94e11d0929150a5481424017e1830:AP_5G/TXPWR_LMT.txt
+17716c458e18adecb2e85509eb5ad28e8ffbbcda7773031ee14464af426a47e2:AP_5G/TXPWR_LMT_RU.txt
+b3238a9d0139c85c8a227aafa70c0eb52dcff4d191fe5e9abca8964b99ff9dd8:AP_5G/TXPWR_TrackTSSI.txt

@@ -1,0 +1,133 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# RX2L Pro: 2.4 GHz (on-SoC WMAC, vendor rtl8192cd HAL) first-boot polish.
+# Replaces etc/uci-defaults/12_wireless-2g-rx2lpro from the 4.14 line, split
+# cleanly in two:
+#
+#   * STANZA CREATION moves to /lib/wifi/rtl8192cd.sh (staged alongside this).
+#     On the new base that is the supported enumeration path: wifi-scripts'
+#     /sbin/wifi still does `include /lib/wifi` and then calls
+#     `detect_$driver` for every `append DRIVERS` entry
+#     (/tmp/rebase-base/package/network/config/wifi-scripts/files/sbin/wifi:64-81).
+#     `wifi detect` is dead -- the same file exits 1 with "Wifi detect is
+#     deprecated. Use wifi config instead" (:58-61), so any 4.14-era habit of
+#     `wifi detect > /etc/config/wireless` now produces an empty file.
+#   * THIS FILE only sets policy on a radio that already exists: its per-unit
+#     MAC, the width migration, and the /etc/Wireless symlink.
+#
+# ★ STILL TRUE, and it is why the detect script has to exist at all:
+# `wifi config`'s ucode detector only enumerates cfg80211 wiphys. The rtl8192cd
+# HAL in base A's WEXT configuration registers no wiphy, so nothing in master
+# generates its wifi-device stanza and an unseeded image boots with NO wireless
+# -- which matters twice over here, because the AP is the documented fallback
+# access path if the wired datapath turns out dead (02_network MODEL C).
+# Handler: /lib/netifd/wireless/rtl8192cd.sh (unchanged from the 4.14 line;
+# netifd still execs `.sh` handlers -- wifi-scripts itself ships
+# files/lib/netifd/wireless/mac80211.sh).
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+. /lib/realtek.sh
+
+rx2lpro_is_board || exit 0
+
+# The driver rewrites /etc/Wireless/RTL8192CD.dat on every interface-up
+# (8192cd_comapi.c:3431, applied from 8192cd_osdep.c:7703 -- 4.14 line
+# numbers, re-verify against base A's rtl8192fe copy). Keep it in RAM or every
+# `wifi up` is a flash write. Stock symlinks the same directory to /tmp.
+[ -e /etc/Wireless ] || ln -s /tmp /etc/Wireless
+
+# ---------------------------------------------------------------------------
+# Ordering: if the radio is not enumerated yet, FAIL on purpose.
+# /etc/init.d/boot deletes a uci-defaults script only when it SUCCEEDS, so
+# exiting non-zero keeps this file for the next boot instead of silently
+# doing nothing forever. This is the mechanism the 4.14 line used for the same
+# race (10_wireless-5g-ifname-dir842:26-31). Which side of the race we are on
+# depends on whether boot runs `wifi config` before or after uci_apply_defaults
+# in the new base-files -- prove it once on the first RAM boot:
+#     grep -n 'wifi config\|uci_apply_defaults' /etc/init.d/boot
+# ---------------------------------------------------------------------------
+radio=""
+for r in $(uci -q show wireless | sed -n 's/^wireless\.\(radio[0-9]*\)=wifi-device$/\1/p'); do
+	[ "$(uci -q get wireless.$r.type)" = rtl8192cd ] || continue
+	radio=$r
+	break
+done
+# First rtl8192cd device only: a second one would be the 5 GHz radio, which is
+# deliberately not seeded here (paragraph 3). If both ever exist, this is the
+# loop that has to grow a per-band split.
+[ -n "$radio" ] || exit 1
+
+# ---------------------------------------------------------------------------
+# 1. Per-unit radio MAC.
+# Read the vendor's own key, resolved by BAND, not by key name:
+#   /proc/wlanN/mib_rf -> `phyBandSelect: 1` = 2.4 GHz, `2` = 5 GHz
+# (technique lifted from base A's lib/wifi/rtl8192cd.sh:rtl8192cd_is_5g).
+# CFG carries TENDA.wlan0_mac = LAN+0x14 and TENDA.wlan1_mac = LAN+0x04 on the
+# unit we dumped; which of those two is the 2.4 GHz address is NOT settled
+# offline (see the long note in 02_network §3 -- stock's eth_name_conf.txt
+# says wl2_4:wlan0, the 4.14 seed's note argues the reverse). So we prefer the
+# runtime answer and only then the key name, and we LOG the choice rather than
+# quietly picking one. Worst case here is a wrong BSSID, never lost access.
+# Not a second source of truth for the LAN/WAN addresses: those belong to
+# board.d/02_network alone (the 4.14 line learned that the hard way -- two
+# writers made the MAC non-deterministic between boots).
+# ---------------------------------------------------------------------------
+lan_mac=$(rx2lpro_cfg_get lan_mac)
+want_5g=0
+for d in /proc/wlan[0-9]; do
+	[ -d "$d" ] || continue
+	grep -qE 'phyBandSelect: *2' "$d/mib_rf" 2>/dev/null || continue
+	[ "$(uci -q get wireless.$radio.ifname)" = "${d#/proc/}" ] && want_5g=1
+done
+
+key=$([ "$want_5g" = 1 ] && echo wlan1_mac || echo wlan0_mac)
+radio_mac=$(rx2lpro_cfg_get "$key")
+if [ -z "$radio_mac" ] && [ -n "$lan_mac" ]; then
+	# Key unreadable (vendor rewrote the config, or CFG checksum bad):
+	# fall back to the measured delta for the band we think this is.
+	# Decimal, because macaddr_add's offset is passed to shell arithmetic
+	# and the 4.14 line only ever exercised decimal forms.
+	#   2.4 GHz delta = 0x14 = 20,  5 GHz delta = 0x04 = 4
+	[ "$want_5g" = 1 ] && radio_mac=$(macaddr_add "$lan_mac" 4) ||
+		radio_mac=$(macaddr_add "$lan_mac" 20)
+	logger -t rx2lpro-wifi \
+		"TENDA.$key unreadable, using LAN+$([ "$want_5g" = 1 ] && echo 4 || echo 20)"
+fi
+
+if [ -n "$radio_mac" ] && [ "$(uci -q get wireless.$radio.macaddr)" != "$radio_mac" ]; then
+	uci -q set wireless.$radio.macaddr="$radio_mac"
+	uci -q commit wireless
+	logger -t rx2lpro-wifi "$radio ($([ "$want_5g" = 1 ] && echo 5g || echo 2g)) MAC from TENDA.$key"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Channel width migration. HT20 is the measured working width on this SoC
+# family: on the reference RTL8197F board VHT80/VHT40 associated clients but
+# never completed DHCP (4.14 line, 11_dir842-htmode-ht20 + the commit cited
+# there). Idempotent and unguarded BY DESIGN so a config-preserving sysupgrade
+# from a wider-width build is corrected once; if the user then sets 40 MHz
+# deliberately, that is their choice and it survives (we only rewrite V*/HT40).
+# ---------------------------------------------------------------------------
+case "$(uci -q get wireless.$radio.htmode)" in
+	VHT80|VHT40|HT40|HE80|HE160)
+		uci -q set wireless.$radio.htmode='HT20'
+		uci -q commit wireless
+		;;
+esac
+
+# ---------------------------------------------------------------------------
+# 3. 5 GHz is NOT seeded, and that is a decision, not a gap.
+# RTL8832BR (Wi-Fi 6) on PCIe. mainline rtw88 does not know the chip, rtw89
+# has no 8832 (8851B/8852A/B/BT/C, 8922A/D), and none of the three reference
+# trees drives it on 6.x -- base A's grep for 8832|8852|rtw89 hits only phydm
+# tables; iptime is rtw88+RTL8822BE; mr1500x runs the vendor rtk_wifi6 SKD on
+# a vendor 4.4 kernel only. Seeding a wifi-device with no driver makes netifd
+# fail the entire wireless bring-up, 2.4 GHz included -- i.e. the fallback
+# access path dies with it. When the SKD lands, add the second radio to
+# /lib/wifi/rtl8192cd.sh (base A already has the 5g branch: band=5g,
+# channel=36, htmode=VHT80) and delete this paragraph.
+# ---------------------------------------------------------------------------
+
+exit 0

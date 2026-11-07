@@ -25,14 +25,31 @@ trusting me.
 ## 1. The device
 
 Tenda **RX2L Pro**, `devModel RX2LProV1.0`, internal board name `AX2_PRO_V2`,
-Realtek **RTL8197F** (MIPS 32r2, single core, 4 MiB RAM? no — 128 MiB), 8 MiB SPI
-NOR, stock `V16.03.51.18(6989)_cn`. Wi-Fi: on-SoC 2.4 GHz WMAC + PCIe **RTL8832BR**
+Realtek **RTL8197F** (MIPS 32r2, single core, 128 MiB RAM), **16 MiB** SPI NOR
+(`/sys/class/mtd/mtd0 name=ALL size=16711680`, every partition `erase=65536`),
+stock `V16.03.51.18(6989)_cn`. Wi-Fi: on-SoC 2.4 GHz WMAC + PCIe **RTL8832BR**
 (Wi-Fi 6) for 5 GHz. External Gigabit switch, RTL8367-family.
 
-Flash map (mtd0..mtd7 labels as stock names them): `Bootloader`(mtd1), `CFG`(mtd2),
-`KernelFS`(mtd3) — single image, **no KernelFS1/2, so no dual-bank rollback**;
-recovery is `disaster_web` (`ipaddr=192.168.1.1 serverip=192.168.1.99`) plus the
-mtd1..mtd7 dumps kept off-device.
+Flash map, measured from the device's own `/sys/class/mtd/*` dump
+(`/tmp/rx_dump/flash/mtdlayout.txt`) — sizes in flash offsets:
+
+    mtd0 ALL        16711680  @0x000000   the whole chip
+    mtd1 Bootloader   196608  @0x000000   U-Boot, XIP at 0xb0000000
+    mtd2 CFG           65536  @0x030000   MACs/device keys/RF (text KVs)
+    mtd3 KernelFS   16252928  @0x040000   <-- the only partition we write (0xF80000)
+    mtd4 RootFS     12318702  @0x400812   squashfs, carved out of KernelFS by mtdsplit
+    mtd5 CFM          65536  @0xFC0000
+    mtd6 CFM_BACKUP   65536  @0xFD0000
+    mtd7 MISC2        65536  @0xFE0000   (0xFE0000+0x10000 = 0xFF0000 = 16 MiB, chip full)
+
+`KernelFS` is one image, **`mtd0` exposes no KernelFS1/KernelFS2**, so the
+stock partition table has no second bank — but `tendaupgrade` contains
+`KernelFS1`/`KernelFS2` strings and touches the `image_boot` env var, so
+"no rollback is possible" is an *inference from the partition table*, not a
+proof. That is exactly what `port/08-veto-paths/` is testing; do not flash
+anything before it reports. Recovery meanwhile is `disaster_web`
+(`ipaddr=192.168.1.1 serverip=192.168.1.99`) plus the mtd1..mtd7 dumps kept
+off-device.
 
 ## 2. Endianness — settled, and it constrains the base
 
