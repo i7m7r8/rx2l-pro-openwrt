@@ -270,7 +270,7 @@ file and only the first the compiler reaches:
 | 7270 | `.set_wds_peer = ...` | removed; no replacement |
 | 6162 | `cfg80211_ch_switch_notify(dev, &chdef)` | takes `(dev, chandef, link_id)` since 6.9 |
 
-All three are fixed by `files/compat/6.18/910-rtl8192fe-cfg80211-6.18.patch`,
+All three are fixed by `compat/6.18/910-rtl8192fe-cfg80211-6.18.patch`,
 which `build.sh` applies right after `files/` is copied over the overlay (those
 sources are not in the tree when `patches-6.18/` is applied, so a normal kernel
 patch cannot reach them) and which fails the build loudly if it stops applying.
@@ -291,4 +291,4 @@ is compiled here. The three fields above are the ones the port missed.
 Anything the compiler finds next is a *different* class of problem -- argument
 counts and types inside function bodies, which a struct diff cannot see. If the
 next build fails, the diagnostics now print the error and the fix should be
-applied the same way: a named patch under `files/compat/6.18/`.
+applied the same way: a named patch under `compat/6.18/`.

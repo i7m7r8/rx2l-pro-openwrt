@@ -153,7 +153,7 @@ cp -a "$SELF_DIR"/files/. .
 # Applied here, right after files/ has landed, and failing the build if they do
 # not apply -- a silent miss would only surface as a kernel compile error 40
 # minutes later.
-COMPAT_DIR="$SELF_DIR/files/compat/6.18"
+COMPAT_DIR="$SELF_DIR/compat/6.18"   # NOT under files/: that tree is copied into the OpenWrt root
 if [ -d "$COMPAT_DIR" ]; then
 	for cpat in "$COMPAT_DIR"/*.patch; do
 		[ -f "$cpat" ] || continue
