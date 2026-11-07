@@ -239,15 +239,21 @@ CONFIG_NET_RTL819X=y
 CONFIG_REALTEK_PHY=y
 CONFIG_REGMAP=y
 CONFIG_PHYLINK=y
-# The switch driver is wired in by
-# patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch, which is what
-# defines CONFIG_RTL8367B_PHY at all. CONFIG_RTL8366_SMI and
-# CONFIG_RTL8366_SMI_DEBUG_FS were set here by the platform but are defined
-# by no Kconfig in this tree, so kconfig dropped both without a word and
-# rtl8367b.c/rtl8366_smi.c were never compiled -- the switch silently stayed
-# absent. rtl8366_smi.o is built by the same Makefile line as rtl8367b.o, and
-# the debugfs code is optional, so neither symbol is needed; keeping them
-# would only re-create the illusion that something was selected.
+# The switch driver needs TWO symbols, both defined by openwrt's generic
+# hack-6.18/700-swconfig_switch_drivers.patch -- nothing in this repo has to
+# define either:
+#   CONFIG_RTL8366_SMI    builds rtl8366_smi.o and is what RTL8367B_PHY
+#                         depends on (that symbol lives inside `if RTL8366_SMI`)
+#   CONFIG_RTL8367B_PHY   builds rtl8367b.o (tristate, select SWCONFIG)
+# An earlier patch here (patches-6.18/999) re-defined RTL8367B_PHY as bool and
+# added its own Makefile line. That made kconfig report
+#   "ignoring type redefinition of 'RTL8367B_PHY' from 'tristate' to 'bool'"
+# followed by "recursive dependency detected! symbol SWCONFIG is selected by
+# RTL8367B_PHY / symbol RTL8367B_PHY depends on SWCONFIG"
+# -- the base's copy selects SWCONFIG while ours depended on it -- and the whole
+# kernel config step failed with `syncconfig: Error 1`. The patch is gone; both
+# symbols are set here instead.
+CONFIG_RTL8366_SMI=y
 CONFIG_RTL8367B_PHY=y
 # Радиочасть временно выключена: драйвер доходит до rtl8192cd_init_one
 # и виснет, а встроенным он собирается только как bool, то есть вешает

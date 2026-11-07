@@ -293,3 +293,58 @@ measured from the stock kernel's `pci_device_id` table, is `10ec:b832`.
 So "all DT is bound" is true in the only sense that matters: nothing in the tree
 is waiting for a driver that does not exist, and the two nodes that look
 unbound are either container nodes or a binding the driver does not use.
+
+## Correction: openwrt already defined RTL8367B_PHY — patch 999 created a Kconfig cycle
+
+Everything above that says "patches-6.18/999 is what makes `RTL8367B_PHY` exist"
+is **wrong**, and the build proved it:
+
+```
+drivers/net/phy/Kconfig:549: warning: ignoring type redefinition of
+        'RTL8367B_PHY' from 'tristate' to 'bool'
+error: recursive dependency detected!
+        symbol SWCONFIG is selected by RTL8367B_PHY
+        symbol RTL8367B_PHY depends on SWCONFIG
+make[7]: *** [scripts/kconfig/Makefile:85: syncconfig] Error 1
+```
+
+OpenWrt's own `target/linux/generic/hack-6.18/700-swconfig_switch_drivers.patch`
+(at our pinned `BASE_REV`) already defines, inside `if RTL8366_SMI`:
+
+```
+config RTL8366_SMI          tristate  (drives rtl8366_smi.o)
+config RTL8367B_PHY         tristate "Driver for the Realtek RTL8367R-VB switch"
+                            select SWCONFIG
+```
+
+and already wires the Makefile:
+
+```
+obj-$(CONFIG_RTL8366_SMI)  += rtl8366_smi.o
+obj-$(CONFIG_RTL8367B_PHY) += rtl8367b.o
+```
+
+So our patch was a *second* definition: `bool` where the base said `tristate`,
+and `depends on SWCONFIG` where the base said `select SWCONFIG`. kconfig ignored
+the redefinition, kept the base's `select`, saw our `depends`, and declared the
+cycle. The kernel never configured, so **nothing compiled** — the failure looked
+like a missing driver but was a self-inflicted dependency loop.
+
+Fix, in place now:
+
+* patch 999 is **deleted** — the base's two hunks are sufficient;
+* `config-6.18` sets both symbols, because `RTL8367B_PHY` lives inside
+  `if RTL8366_SMI` and would otherwise be silently dropped:
+
+```
+CONFIG_RTL8366_SMI=y
+CONFIG_RTL8367B_PHY=y
+```
+
+The driver sources (`rtl8367b.c`, `rtl8366_smi.c`, `rtl8367.h`) still come from
+the overlay's `files-6.18/drivers/net/phy/`, which is what our file adds to.
+
+Lesson for the next symbol: before adding a Kconfig entry, check whether the
+base already has it (`git grep` in the openwrt tree at BASE_REV), because a
+duplicate definition does not "enable" anything — it re-opens a dependency graph
+that was already solved.

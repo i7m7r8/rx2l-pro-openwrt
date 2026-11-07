@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'files/**'
+      - 'compat/**'
       - 'tools/**'
       - 'tests/**'
       - 'scripts/**'
