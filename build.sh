@@ -21,9 +21,21 @@ set -e
 cd "$(dirname "$0")"
 SELF_DIR="$(pwd)"
 
-BASE_REV=8a0ccb93f3431bcf8f5c5d03d4acc2c8e442de67
+# ---- base tree ---------------------------------------------------------------
+# Two facts drive these two variables:
+#   * main builds against ggbruno/openwrt branch "Realtek" @ 8a0ccb9, kernel
+#     4.14. That fork's newer branches (openwrt-22.03, openwrt-23.05, master)
+#     carry only rtl838x/rtl839x/rtl930x/rtl931x in target/linux/realtek -- the
+#     consumer rtl8197f subtarget exists ONLY on the 4.14 branch, verified via
+#     the GitHub contents API, not inferred.
+#   * upstream OpenWrt has never had RTL8197F router support at all, so a
+#     current-kernel base has to come from a tree that implemented the platform.
+# Both are overridable because this branch is exactly that experiment; leaving
+# them hardcoded is what would make the 4.14 line unbuildable from here.
+BASE_REPO="${BASE_REPO:-https://github.com/ggbruno/openwrt}"
+BASE_REV="${BASE_REV:-8a0ccb93f3431bcf8f5c5d03d4acc2c8e442de67}"
 
-[ -e openwrt ] || git clone https://github.com/ggbruno/openwrt
+[ -e openwrt ] || git clone "$BASE_REPO"
 cd openwrt
 git checkout "$BASE_REV"
 
@@ -47,7 +59,19 @@ if [ -n "${PROFILE:-}" ]; then
 	[ -f files/etc/dropbear/authorized_keys ] && chmod 600 files/etc/dropbear/authorized_keys
 fi
 
-cp "$SELF_DIR/feeds.conf" feeds.conf
+# ---- feeds + seed ------------------------------------------------------------
+# On main both are 19.07-era BY NECESSITY: the current luci feed is ucode-based
+# and dies compiling ucode-mod-html / liblucihttp-ucode against a 4.14 base, and
+# the packages feed must be pinned too because master split miniupnpd into
+# miniupnpd-iptables/-nftables and dropped cgi-io (see feeds.conf).
+# On a newer base the feed pins AND the package *names* change together, so all
+# three inputs are overridable rather than hardcoded. The failure mode of
+# getting this wrong is silent, which is why it is not just left as-is.
+FEEDS="${FEEDS:-$SELF_DIR/feeds.conf}"
+SEED="${SEED:-$SELF_DIR/seed.config}"
+FEEDS_INSTALL="${FEEDS_INSTALL:-luci luci-base luci-mod-admin-full luci-theme-bootstrap luci-app-firewall luci-app-upnp luci-app-opkg luci-proto-ppp uhttpd uhttpd-mod-ubus cgi-io miniupnpd qos-scripts}"
+
+cp "$FEEDS" feeds.conf
 if [ -z "${SKIP_FEEDS:-}" ]; then
 	./scripts/feeds update luci packages
 fi
@@ -55,12 +79,10 @@ fi
 # CONFIG_PACKAGE_luci=y, and if the symbol does not exist at `make defconfig`
 # time it is dropped SILENTLY, taking uhttpd and the admin pages with it --
 # you get an image with no web UI and no error anywhere.
-./scripts/feeds install luci luci-base luci-mod-admin-full luci-theme-bootstrap \
-			luci-app-firewall luci-app-upnp luci-app-opkg \
-			luci-proto-ppp uhttpd uhttpd-mod-ubus \
-			cgi-io miniupnpd qos-scripts
+# Word-splitting is intentional here, so no quotes.
+./scripts/feeds install $FEEDS_INSTALL
 
-cp "$SELF_DIR/seed.config" .config
+cp "$SEED" .config
 make defconfig
 make -j"$(nproc)"
 
