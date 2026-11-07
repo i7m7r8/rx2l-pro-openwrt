@@ -354,8 +354,27 @@ grep -q '^CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_' .config || {
 [ $rc -eq 0 ] || { echo "SEED DOES NOT RESOLVE ON THIS BASE - fix the seed, not the check." >&2; exit 1; }
 
 # ---- build ---------------------------------------------------------------------
-make -j"$JOBS" download
-make -j"$JOBS"
+# Everything below is captured, and on failure the END of it is printed.
+#
+# Why: OpenWrt's toplevel `make -j` prints one `make[3] -C <dir> compile` line per
+# job and lets each job write its own output. When one dies, the only trace left
+# in the CI log was
+#     ERROR: target/linux failed to build.
+#     make: *** [include/toplevel.mk:233: world] Error 1
+# with the actual compiler error nowhere -- 5083 lines of log and not one of them
+# said why. That costs a full run to learn nothing.
+BUILD_LOG="${BUILD_LOG:-/tmp/rx2l-build.log}"
+make -j"$JOBS" download 2>&1 | tee "$BUILD_LOG"
+if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
+	echo >&2
+	echo "================= BUILD FAILED =================" >&2
+	echo "--- the failing output (last 80 lines that are not make plan lines) ---" >&2
+	grep -vE '^(make\[[0-9]+\]|  *make\[[0-9]+\])' "$BUILD_LOG" | tail -80 >&2
+	echo "--- and the last 40 lines regardless ---" >&2
+	tail -40 "$BUILD_LOG" >&2
+	echo "=============== END BUILD LOG ==================" >&2
+	exit 1
+fi
 
 # ---- verify the produced containers --------------------------------------------
 # The board's boot contract is header-driven: 'cr6c'/'cs6c' magic at +0 and an
