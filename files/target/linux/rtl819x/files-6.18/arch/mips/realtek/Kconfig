@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Override of the platform's arch/mips/realtek/Kconfig for this tree.
+#
+# WHY: every SoC here does `select HW_HAS_PCI`. That symbol existed in MIPS
+# Kconfig up to v4.19 (`config HW_HAS_PCI` + `config PCI depends on HW_HAS_PCI`);
+# from 5.x the PCI symbol moved to drivers/pci/Kconfig as
+# `menuconfig PCI depends on HAVE_PCI`, and platforms select HAVE_PCI instead.
+# In 6.18 `HW_HAS_PCI` appears nowhere in the tree, so the select is inert:
+# kconfig warns about selecting an unknown symbol, HAVE_PCI stays unset, PCI is
+# not even offered, and `CONFIG_PCI=y` in a config fragment is dropped without
+# an error. That is why the platform's PCIe host driver
+# (arch/mips/pci/pci-realtek.c) has never been built, and why their note says
+# enabling the PCI bus hung the boot -- whatever they enabled, it was not this.
+#
+# The change below is exactly `HW_HAS_PCI` -> `HAVE_PCI` (three SoCs), which is
+# what those platforms mean on a current kernel. PCI_DRIVERS_LEGACY (already =y
+# in the subtarget config) is what pci-realtek.c is written against.
+#
+# SPDX-License-Identifier: GPL-2.0
+if REALTEK
+
+choice
+	prompt "Realtek SoC selection"
+	default SOC_RTL8197D
+	help
+	  Select Realtek SoC type.
+
+	config SOC_RTL8196E
+		bool "RTL8196E"
+		select USE_GENERIC_EARLY_PRINTK_8250
+		select SYS_SUPPORTS_BIG_ENDIAN
+		select SYS_HAS_CPU_RLX4181
+		select HAVE_PCI
+		select GPIOLIB
+		select GPIO_GENERIC
+		select GPIOLIB_IRQCHIP
+
+	config SOC_RTL8197D
+		bool "RTL8197D"
+		select USE_GENERIC_EARLY_PRINTK_8250
+		select SYS_SUPPORTS_BIG_ENDIAN
+		select SYS_HAS_CPU_RLX5281
+		select HAVE_PCI
+		select GPIOLIB
+		select GPIO_GENERIC
+		select GPIOLIB_IRQCHIP
+
+	config SOC_RTL8197F
+		bool "RTL8197F"
+		select SYS_SUPPORTS_LITTLE_ENDIAN
+		select SYS_HAS_CPU_MIPS32_R1
+		select SYS_HAS_CPU_MIPS32_R2
+		select HAVE_PCI
+		select GPIOLIB
+		select GPIO_GENERIC
+		select GPIOLIB_IRQCHIP
+		select CEVT_R4K
+		select CSRC_R4K
+
+endchoice
+
+choice
+	prompt "Devicetree selection"
+	default DTB_RTK_NONE
+	help
+	  Select the devicetree.
+
+	config DTB_RTK_NONE
+		bool "None"
+
+	config DTB_RTL8196E_GEN
+		bool "RTL8196E generic"
+		depends on SOC_RTL8196E
+		select BUILTIN_DTB
+
+	config DTB_RTL8197D_GEN
+		bool "RTL8197D generic"
+		depends on SOC_RTL8197D
+		select BUILTIN_DTB
+
+	config DTB_RTL8197F_GEN
+		bool "RTL8197F generic"
+		depends on SOC_RTL8197F
+		select BUILTIN_DTB
+
+endchoice
+
+endif
