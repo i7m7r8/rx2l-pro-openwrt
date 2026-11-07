@@ -37,7 +37,11 @@ Flash map, measured from the device's own `/sys/class/mtd/*` dump
     mtd1 Bootloader   196608  @0x000000   U-Boot, XIP at 0xb0000000
     mtd2 CFG           65536  @0x030000   MACs/device keys/RF (text KVs)
     mtd3 KernelFS   16252928  @0x040000   <-- the only partition we write (0xF80000)
-    mtd4 RootFS     12318702  @0x400812   squashfs, carved out of KernelFS by mtdsplit
+    mtd4 RootFS     12318190  @0x400812   squashfs, carved out of KernelFS by mtdsplit
+                    (0xBBF7EE; the sysfs dump in the same capture printed 12318702,
+                     which cannot be right: 0x400812 + 0xBBF7EE = 0xFC0000 = mtd5 start,
+                     while +12318702 would overrun it by 512 bytes. See
+                     notes/firmware-audit.md.)
     mtd5 CFM          65536  @0xFC0000
     mtd6 CFM_BACKUP   65536  @0xFD0000
     mtd7 MISC2        65536  @0xFE0000   (0xFE0000+0x10000 = 0xFF0000 = 16 MiB, chip full)
