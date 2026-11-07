@@ -79,7 +79,11 @@ echo ">>> base: $BASE_REPO @ $BASE_REV"
 # ---- 2. platform overlay -----------------------------------------------------
 # Cached INSIDE the base tree (hence gitignored) so an accidental `git add -A`
 # in this repo can never stage ~40 MB of someone else's GPL drop.
-OVERLAY_CACHE=".port-cache/openwrt-rx23302"
+# Absolute, because the stamp below is computed from inside
+# "$OVERLAY_CACHE/openwrt": a relative path there resolves to
+# .../openwrt/.port-cache/... and the patch silently drops out of the stamp,
+# so a patch-only change would keep a warm-but-wrong tree.
+OVERLAY_CACHE="$PWD/.port-cache/openwrt-rx23302"
 [ -d "$OVERLAY_CACHE/.git" ] || git clone -q "$OVERLAY_REPO" "$OVERLAY_CACHE"
 git -C "$OVERLAY_CACHE" fetch -q origin "$OVERLAY_REV" 2>/dev/null || true
 git -C "$OVERLAY_CACHE" checkout -q -f "$OVERLAY_REV"
@@ -234,10 +238,30 @@ fix_exec_bits target/linux/rtl819x/base-files
 # pinned by commit with the '^rev' selector, and every comment line starts with
 # '#!' because scripts/feeds strips comments with s/#.+$// and then calls a
 # bare '#' a syntax error.
-FEEDS="${FEEDS:-$SELF_DIR/feeds.conf.new}"
-[ -f "$FEEDS" ] || FEEDS="${FEEDS:-$SELF_DIR/feeds.conf}"
-SEED="${SEED:-$SELF_DIR/seed.config.new}"
-[ -f "$SEED" ] || SEED="${SEED:-$SELF_DIR/seed.config}"
+# NOTE the shape of these two blocks. The obvious one-liner
+#	FEEDS="${FEEDS:-$SELF_DIR/feeds.conf.new}"
+#	[ -f "$FEEDS" ] || FEEDS="${FEEDS:-$SELF_DIR/feeds.conf}"
+# NEVER falls back: the first line has already set FEEDS to a non-empty value,
+# so the "${FEEDS:-...}" on the second line expands to itself. With no
+# feeds.conf.new in the tree that leaves FEEDS pointing at a file that does not
+# exist and the build dies at `cp "$FEEDS" feeds.conf` -- 90 seconds in, after
+# the base clone, which is how the 08:37 run failed.
+if [ -z "${FEEDS:-}" ]; then
+	if [ -f "$SELF_DIR/feeds.conf.new" ]; then
+		FEEDS="$SELF_DIR/feeds.conf.new"
+	else
+		FEEDS="$SELF_DIR/feeds.conf"
+	fi
+fi
+if [ -z "${SEED:-}" ]; then
+	if [ -f "$SELF_DIR/seed.config.new" ]; then
+		SEED="$SELF_DIR/seed.config.new"
+	else
+		SEED="$SELF_DIR/seed.config"
+	fi
+fi
+[ -f "$FEEDS" ] || { echo "ERROR: no feeds file at $FEEDS" >&2; exit 1; }
+[ -f "$SEED" ] || { echo "ERROR: no seed file at $SEED" >&2; exit 1; }
 
 # Default to installing EVERYTHING from both feeds, which is what the base's
 # own build.sh does, and why ours can stop lying: with a curated list, a symbol

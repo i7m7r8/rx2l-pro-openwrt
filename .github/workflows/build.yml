@@ -8,10 +8,13 @@ on:
       - 'tools/**'
       - 'tests/**'
       - 'port/**'
+      - 'scripts/**'
       - 'Dockerfile'
       - 'build.sh'
       - 'feeds.conf'
+      - 'feeds.conf.new'
       - 'seed.config'
+      - 'seed.config.new'
       - '.github/workflows/build.yml'
   pull_request:
 
