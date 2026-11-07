@@ -99,3 +99,42 @@ iteration and it needs no device.
   kernel) including the country-code-via-proc and never-pre-`up` rules.
 * Nobody needs anything from me for v1: 5 GHz stays absent by design, and that
   is already correct in `seed.config` / README risk row 8.
+
+## Driver inventory (2026-11-07 evening): what is actually missing
+
+Asked directly whether any hardware driver is missing, and re-checked against the
+pinned base rather than against memory. Answer: **one driver, plus one disabled
+subsystem** — and the subsystem is the one that blocks the driver.
+
+| hardware | driver | state on this base |
+|---|---|---|
+| RTL8197F SoC ethernet + HW NAT | `rtl819x_eth.c` + `rtl819x_hwnat.c` | ✔ present, `CONFIG_NET_RTL819X=y`, 720 patch builds both |
+| external RTL8367RB switch | `rtl8367b.c` + `rtl8366_smi.c` | ✔ present, **was never compiled** — no header/Makefile/Kconfig; wired this week (`patches-6.18/999`) |
+| on-SoC 2.4 GHz WMAC | `rtl8192fe` HAL | ✔ present, wired by patch 737, config symbols real |
+| SPI NOR, GPIO, timers, IRQ | platform code | ✔ `arch/mips/realtek/*` |
+| **PCIe root complex** | `arch/mips/pci/pci-realtek.c` | ⚠ **present but switched off**: `# CONFIG_PCI is not set` (`rtl8197f/config-6.18:244`) |
+| **5 GHz RTL8832BR (10ec:b832)** | vendor G6 SKD (`rtk_wifi6`) | ✗ **not in tree, not in mainline**; staged plan in `skd-attempt/` |
+
+So the PCIe controller is *not* missing: 468 lines sit in
+`files-6.18/arch/mips/pci/pci-realtek.c`, it matches
+`compatible = "realtek,rtl8196b-pci"`, and our board DTS already sets
+`&pcie0 { status = "okay"; }` on the SoC's node (reg/reg-names/ranges all
+present). What is missing is the config switch — and the platform's own note is
+that turning it on hung their boot, which is why it is off.
+
+The 5 GHz gap therefore has two stages, in this order:
+
+1. **Enable PCI.** One line in the subtarget config (`CONFIG_PCI=y`, and
+   `CONFIG_PCI_QUIRKS=y` is probably wanted for the legacy host bridge), then
+   validate a boot **from the initramfs image over serial** — never the first
+   flash — because the failure mode reported upstream is a boot hang, not a
+   missing device. The DTS side needs nothing.
+2. **Then the driver.** `10ec:b832` has no mainline driver in v6.18 or master
+   (rtw89 knows `b851/b852/b85b/c852/8922` only; re-checked today), and no
+   firmware file exists that we could legitimately ship. The vendor SKD is the
+   only route, already staged with a 6.6 compile proven elsewhere.
+
+It is deliberately NOT enabled in this tree: the first image we hand over must
+boot, and a PCIe hang would take the whole board down before anyone could see
+whether the rest works. The experiment belongs to a boot on the bench, with the
+serial console open and the initramfs image — not to the first flash.
