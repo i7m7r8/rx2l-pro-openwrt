@@ -1,12 +1,20 @@
 # The webui "Local Upgrade" contract, as actually executed
 
-Resolved 2026-11-07. This replaces the open question that used to sit at the end
-of the "Install paths" section of the README.
+Resolved 2026-11-07, corrected the same day. This replaces the open question that
+used to sit at the end of the "Install paths" section of the README.
 
-**Bottom line: a Tenda-webui-uploadable OpenWrt image is possible, and the way it
-works is that the signature check is real but *not on the critical path*.** The
-webui runs the vendor RSA verifier, ignores its result, and then flashes whatever
-`/var/image` still contains once a *format* check passes.
+**Bottom line: the webui cannot install a hand-built image.** An earlier revision
+of this note concluded the opposite — that the RSA verdict is discarded, so a
+plaintext container would flash. That was one function short of the truth, and
+the record is kept because the wrong version read perfectly plausible: it is
+true that `upgrade()` ignores `decry_firm`'s return value, but `decry_firm`
+*records its verdict* in `/tmp/UPGRADE_DECRY_FAIL_FLAG`, and `check_fw()` tests
+that file before it checks anything else. The gate is the flag file, not the
+discarded rc.
+
+Everything below is kept because it still describes the container geometry and
+the field-level checks; the verdict sections have been rewritten against the
+disassembly, and `port/08-veto-paths/REPORT.md` carries the executed proof.
 
 ## The chain, with the evidence
 
@@ -32,7 +40,11 @@ Two things follow directly from that listing:
    is the `stat64` call. The flasher is gated only by `systool_upgradefile_handle`
    returning 0, and that function's whole job is `check_fw`.
 
-So the RSA gate exists, runs, fails — and is discarded.
+So the RSA gate exists, runs, fails — and its verdict does **not** vanish with
+the return value: `decry_firm` receives the flag path as `argv[2]` and writes
+that file itself. The next consumer of the failure is therefore `check_fw()`,
+one call deeper (`port/08-veto-paths/REPORT.md` §1.5 has the call chain and the
+`0x44708 bnez` that skips the flash trigger).
 
 ## Proof, offline, on the real binary
 
@@ -54,8 +66,10 @@ $ ls -l FAILFLAG               # created, 0 bytes
 
 `decry_firm` refuses the plaintext, writes the flag, and **leaves the image
 untouched** — it never opens it for writing before verifying. So `/var/image`
-still holds our complete image when `check_fw` runs. This is the single experiment
-that turns "webui-upgradable" from speculation into a property of the code.
+still holds our complete image when `check_fw` runs. That is what made the
+earlier revision of this note conclude the image would flash; what it settles is
+only that the *bytes survive* the failed decrypt. Survival is not acceptance:
+`check_fw`'s first instruction tests the flag that the same failed run created.
 
 Also checked: `publish/phone/js/upgrade.js` has no filename/extension/model
 validation (only Vue `modelValue` bindings), so the browser adds no gate of its
@@ -64,10 +78,26 @@ own.
 ## What `check_fw` requires, field by field
 
 Decompiled with the Ghidra engine Craft Anything installed
-(`check_fw_type`, `check_fw_valid`, `check_fw_crc`, `check_mtd_size` out of
-`lib/libcommon.so`). `check_fw_valid` returns **1 = valid**; the others return
-`-1` on the accepted path, so read the returns as "which branch matched", not
-"error code".
+(`check_fw` out of `lib/libcommonprod.so`@`0x2a518`; `check_fw_type`,
+`check_fw_valid`, `check_fw_crc`, `check_mtd_size` are the helpers it calls, and
+`lib/libcommon.so` ships the helpers without `check_fw` itself).
+`check_fw_valid` returns **1 = valid**; the others return `-1` on the accepted
+path, so read the returns as "which branch matched", not "error code".
+
+The function opens with the flag test, before any of the field checks:
+
+```
+0002a550  move   $a1, $zero          ; F_OK
+0002a558  addiu  $a0, $v0, 0x61a8    ; '/tmp/UPGRADE_DECRY_FAIL_FLAG'
+0002a55c  lw     $v0, -0x7e30($gp)   ; {access}
+0002a564  jalr   $t9
+0002a570  bnez   $v0, 0x2a5b0        ; absent -> continue to check_fw_type
+0002a578  addiu  $v0, $zero, -1      ; present -> -1, no field is examined
+0002a590  printf('[%s]:[%d]-----image decrypted failed---\n', 'check_fw', 0x1e6)
+```
+
+Then the field checks below, which is why they still matter as a description of
+a well-formed container.
 
 * `check_fw_type(buf, size)` — `size >= 0x40` else reject. Copies the first
   `0x44` bytes, then `ntohl(buf[0x00])` must be `0x27051956`, and the byte at
@@ -103,20 +133,6 @@ image (passes) and against single-byte mutations of the CRC field and the
 product-id field (each rejected on exactly the right rule), and can re-run the
 `decry_firm` pass-through probe itself with `--probe --rootfs <extracted rootfs>`.
 
-## Still unverified (and how each gets settled)
-
-* The `fw_type` value the webui passes for our product (types `2/4/6` are the
-  supported set, `6` is the dual-image one and our board has a single
-  `KernelFS`, so `fw_type` must not be 6) -- read from `libgo.so`'s `fw_type`
-  global and the CGI parameter that sets it.
-* Whether some *other* daemon that reads `UPGRADE_DECRY_FAIL_FLAG`
-  (`business_proc`, `netctrl`, `cwmpd`) vetoes or rolls back a flash after
-  `check_fw` passed. Our board has one `KernelFS`, so a rollback has nowhere to
-  go -- but that has to be demonstrated, not assumed.
-* Whether `check_mtd_size` bounds by the 15.5 MiB `KernelFS` or by something
-  else; `tools/check-webui-bin.py` currently uses the `mtd3` size from
-  `/proc/mtd`.
-
 ## The header we must reproduce
 
 From the genuine decrypted plaintext of our own model (`dec/` copy, first 0x40
@@ -150,22 +166,32 @@ already proves byte-for-byte.
 
 * The precise per-field comparisons inside `check_fw_valid` / `check_fw_type`
   (which bytes must equal which `fw.product.id` / `fw_type` values, and whether a
-  version-downgrade rule rejects us). Ghidra is decompiling those four functions
-  now; the answer goes in this file, and the result becomes a CI assertion rather
-  than a guess.
+  version-downgrade rule rejects us). These no longer gate us — the flag check
+  runs first and a hand-built image never reaches them — but they still describe
+  a well-formed container, and `tools/check-webui-bin.py` encodes what is known
+  so a malformed artifact is caught before flash rather than on it.
 * Whether `check_mtd_size` bounds the image by the **whole** 16 MiB flash or only
   the 15 MiB `KernelFS` region — matters because our image must also fit the
   `check-size` budget of the image recipe.
-* The real-device behaviour of the flag file: does some *other* daemon
-  (`business_proc`, `netctrl`, `cwmpd` all read `UPGRADE_DECRY_FAIL_FLAG`) veto or
-  roll back the flash after `check_fw` passed? None of them is on the `upgrade()`
-  path, but this must be read before we trust the conclusion on hardware.
+* The `fw_type` value the webui passes for our product (types `2/4/6` are the
+  supported set; `6` is the dual-image one and our board has a single `KernelFS`,
+  so it must not be 6) — read from `libgo.so`'s `fw_type` global and the CGI
+  parameter that sets it.
+* The real-device behaviour of a **stale** flag: `business_proc`, `netctrl` and
+  `cwmpd` all name `UPGRADE_DECRY_FAIL_FLAG`, and none of them is on the
+  `tendaupgrade` path we install with. `/tmp` is tmpfs, so the flag cannot
+  survive a power cycle; what is still unread is whether any of them acts on one
+  inside the same boot. This does not affect README path 2 (the vendor flasher
+  never decrypts and has no `check_fw` import), only a hypothetical future
+  webui-based flow.
 
 ## Install semantics — "erase userdata, then fresh OpenWrt"
 
-The webui path writes exactly one partition: `KernelFS` (`/dev/mtd3`, flash
+The flasher writes exactly one partition: `KernelFS` (`/dev/mtd3`, flash
 offset `0x40000`), via `tendaupgrade`, which flips `env image_boot` and reboots.
-Consequences for a clean install:
+(The webui would have reached the same flasher through
+`systool_call_writeImage_delay_11ac`, but it cannot get past `check_fw`; see the
+top of this file.) Consequences for a clean install:
 
 * Everything in OpenWrt's config lives in the **overlay**, which does not exist in
   a fresh squashfs image, so first boot runs all `/etc/uci-defaults/*` and lands on

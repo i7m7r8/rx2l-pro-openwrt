@@ -126,9 +126,29 @@ Plaintext (our image) → rc 255 and **flag created, mode 0700 after umask,
 00042e94 bnez $v0 → 00042ec4 doSystemCmd('rm /var/image'); return err
 00042ea0 puts('check type ok.begain to upgrade....'); return 0
 ```
-`check_fw()`'s flag test is its first action (established by the caller's
-decompile), so with the flag present `check_fw` returns -1 and
-`tpi_upload` deletes the staged image. Back in `upgrade()`:
+`check_fw()`'s flag test is its first action — now read directly out of
+`lib/libcommonprod.so@0x2a518`, not inferred from the caller:
+
+```
+0002a518  lui    $gp, 6 / addiu $gp,$gp,-0x2cb8 / addu $gp,$gp,$t9   ; prologue
+0002a548  sw     $zero, 0x1c($fp)          ; rc = 0
+0002a550  move   $a1, $zero                ; F_OK
+0002a554  lw     $v0, -0x7fd0($gp)         ; rodata base (0x60000)
+0002a558  addiu  $a0, $v0, 0x61a8          ; '/tmp/UPGRADE_DECRY_FAIL_FLAG'
+0002a55c  lw     $v0, -0x7e30($gp)         ; {access}
+0002a564  jalr   $t9
+0002a570  bnez   $v0, 0x2a5b0              ; != 0 (absent) -> check_fw_type
+0002a578  addiu  $v0, $zero, -1            ; == 0 (present) -> rc = -1
+0002a590  addiu  $a0, $v0, 0x61c8          ; '[%s]:[%d]-----image decrypted failed---\n'
+0002a5a8  b      0x2ab44                  ; straight to the return
+```
+
+So with the flag present `check_fw` returns -1 before it looks at a single byte
+of the image, and `tpi_upload` deletes the staged image. Note also that
+`lib/libcommon.so` carries `check_fw_type`/`check_fw_valid`/`check_fw_crc` but
+**not** `check_fw` and not this string: the reader lives in `libcommonprod.so`,
+which is why the string grep in §1.1 finds it there and not in `libcommon.so`.
+Back in `upgrade()`:
 `0x44654 bgez` → errCode=abs(-1)=1 → 302 redirect
 `%s/corss-domain-res.html?errCode=1`, and because rc!=0 it **skips**
 `clean_force_upgrade_info()` + `systool_call_writeImage_delay_11ac()` (the only

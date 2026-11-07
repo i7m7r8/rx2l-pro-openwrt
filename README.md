@@ -93,29 +93,59 @@ the exact offset first, then the aligned one, then scan
 
 ## Install paths — read this before touching a router
 
-**The webui's "Local Upgrade" can take our image — because it throws away the
-signature verdict.** `/bin/decry_firm` does verify an **RSASSA-PKCS1-v1_5 with
-SHA-512 signature over the entire AES payload** of a `TDE01` container with a
-4096-bit public key embedded in the binary (modulus at `.rodata 0x41cd00`,
-`e = 65537` at `.data 0x42f940`); `pow(sig, 65537, N)` yields the `00 01 FF FF…`
-DigestInfo prefix, and no modified or self-built file can pass it. What we missed
-until now is that **passing it is not required**: `libgo.so`'s `upgrade()` handler
-runs `decry_firm /var/image /tmp/UPGRADE_DECRY_FAIL_FLAG` and then never looks at
-the return value. It only requires that `/var/image` still exists, that
-`check_fw()` accepts its *format*, and then it flashes it. Proven offline on the
-stock binary under qemu: fed a plaintext image, `decry_firm` fails (`rc=255`),
-touches the flag file, and leaves the bytes **identical** (sha256 checked
-before/after). Full chain, evidence addresses and the remaining unknowns:
-[`notes/webui-upgrade-contract.md`](notes/webui-upgrade-contract.md).
+**The webui's "Local Upgrade" will not take our image.** An earlier revision of
+this file said the opposite ("the signature verdict is discarded, so a plaintext
+image flashes"); that reading stopped one function too early, and it is worth
+showing why, because it decides which install path you are allowed to plan on.
+
+`/bin/decry_firm` verifies an **RSASSA-PKCS1-v1_5 with SHA-512 signature over the
+entire AES payload** of a `TDE01` container with a 4096-bit public key embedded in
+the binary (modulus at `.rodata 0x41cd00`, `e = 65537` at `.data 0x42f940`), and no
+self-built file can pass it. It is true that `upgrade()` (`libgo.so@0x441ec`)
+never reads `decry_firm`'s return value — but it does not have to: `decry_firm`
+is called as `decry_firm /var/image /tmp/UPGRADE_DECRY_FAIL_FLAG`, and it
+*records its own verdict* in that second argument. It unlinks a stale flag,
+decrypts in place, and on failure **creates the flag** (0 bytes, rc 255) while
+leaving the image byte-identical.
+
+`check_fw()`, the pre-flash gate in `lib/libcommonprod.so` at `0x2a518`, tests
+that flag **before it does anything else**, before type, size or CRC:
+
+```
+0002a550  move   $a1, $zero          ; access(path, F_OK)
+0002a558  addiu  $a0, $v0, 0x61a8    ; ['/tmp/UPGRADE_DECRY_FAIL_FLAG']
+0002a55c  lw     $v0, -0x7e30($gp)   ; {access}
+0002a564  jalr   $t9
+0002a570  bnez   $v0, 0x2a5b0        ; flag ABSENT -> the real checks
+0002a578  addiu  $v0, $zero, -1      ; flag PRESENT -> return -1
+0002a590  ... printf('...-----image decrypted failed---\n')
+```
+
+That -1 travels back through `tpi_upload` (`libgo.so@0x42e38`) to
+`systool_upgradefile_handle` and into `upgrade()`, which at `0x44708`
+(`bnez $v0, 0x44778`) **skips the only flash trigger** in the binary
+(`systool_call_writeImage_delay_11ac`), deletes `/var/image` and reboots. Nothing
+is written to flash, and the browser gets
+`/corss-domain-res.html?errCode=1`.
+
+So: we cannot build a file that `decry_firm` accepts (the TDE01 key is not
+recoverable), and the moment we cannot, `check_fw` refuses. The webui path is
+closed, not because RSA cannot be forged, but because **the failure is
+remembered in a file that the next gate checks first**. The full chain, with the
+qemu execution proof for `decry_firm` and every call-site address, is
+[`port/08-veto-paths/REPORT.md`](port/08-veto-paths/REPORT.md); the header/format
+fields the vendor gate would have wanted are still documented in
+[`notes/webui-upgrade-contract.md`](notes/webui-upgrade-contract.md) because they
+define the container geometry.
 
 `check_fw` → `check_fw_type` / `check_fw_valid` / `check_fw_crc` /
-`check_mtd_size` (all in `lib/libcommon.so`) contain **no** RSA or
-`EVP_DigestVerify` call at all: they check header shape, sizes, `fw_type`,
-`fw.product.id` and the payload CRC32 — i.e. the same fields
-`*-tenda-plaintext.bin` already reproduces byte-exactly from a genuine vendor
-image. So the artifact that the webui accepts is the **plaintext** container, not
-a `TDE01` file, and we build it by editing a real RX2L Pro image's payload +
-length + CRC rather than by trying to forge anything.
+`check_mtd_size` (`check_fw` itself in `lib/libcommonprod.so`; `lib/libcommon.so`
+carries only the `check_fw_*` helpers) contain **no** RSA or
+`EVP_DigestVerify` call: they check header shape, sizes, `fw_type`,
+`fw.product.id` and the payload CRC32. Those are exactly the fields
+`tools/check-webui-bin.py` validates offline, and they are still worth
+validating — not for the webui, but so a container that *would* have been
+accepted can be told apart from one that is malformed before it reaches flash.
 
 Install paths, in the order to try them:
 
@@ -123,20 +153,28 @@ Install paths, in the order to try them:
    through the Realtek loader shell (`<RealTek>` prompt: `LOADADDR`, `XMOD`,
    `IPCONFIG`) — see *First-boot risk checklist* below. Serial cable required.
    Nothing is persisted; a power cycle returns you to stock.
-2. **Webui "Local Upgrade" with `*-tenda-plaintext.bin`.** One `KernelFS` write
-   done by the vendor's own flasher. Fresh squashfs = pristine default config,
-   which is the factory-reset behaviour you want; the `CFG` partition is never
-   touched because our port reads the MAC and RF calibration out of it.
-3. **Vendor `tendaupgrade` from a root shell.** Same contract as path 2 but
-   invoked directly: `tendaupgrade <fwtype> <1|0> /var/image`.
-4. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP, or **direct MTD
-   write** to `mtd3` from a root shell — the explicit fallbacks.
+2. **Vendor `tendaupgrade` from a root shell.** One `KernelFS` write done by the
+   vendor's own flasher: `tendaupgrade <fwtype> <1|0> /var/image`. This is the
+   first path that actually installs, and it is not affected by anything above:
+   `tendaupgrade` contains neither the `decry_firm` string nor a `check_fw`
+   import (verified on the extracted binary), so it never decrypts and never
+   consults the flag. Fresh squashfs = pristine default config, which is the
+   factory-reset behaviour you want; the `CFG` partition is never touched
+   because our port reads the MAC and RF calibration out of it.
+3. **Loader `AUTOBURN`** with `*-factory-cr6c.bin` over TFTP — the recovery-grade
+   path, and the one that works when nothing on flash boots at all.
+4. **Direct MTD write** to `mtd3` from a root shell — the explicit fallback when
+   the vendor flasher itself is what is misbehaving.
 
-⚠ Before any of 2–4 runs on hardware, the four `check_fw_*` comparisons must be
-read byte-for-byte (in progress) so that the image we generate is *known* to
-return 0 from `systool_upgradefile_handle`, and we must confirm that no other
-daemon that reads `UPGRADE_DECRY_FAIL_FLAG` (`business_proc`, `netctrl`, `cwmpd`)
-vetoes or rolls the flash back. Paths 1 is unaffected by either question.
+⚠ The webui will reject the plaintext artifact with `errCode=1` and will not
+touch flash; that is expected behaviour, not a build failure. What still has to
+be true before path 2–4 runs on hardware is narrower than it used to be: the
+four `check_fw_*` comparisons are read and encoded in `tools/check-webui-bin.py`
+(done), so an image can be proven *well-formed* offline, and the only open
+question left is whether a daemon that reads `UPGRADE_DECRY_FAIL_FLAG` acts on a
+stale one after a reboot (`business_proc`, `netctrl`, `cwmpd` all name the file;
+none of them is on the `tendaupgrade` path, and `/tmp` is tmpfs, so the flag does
+not survive a power cycle). Path 1 is unaffected by all of it.
 
 ## First-boot risk checklist
 
