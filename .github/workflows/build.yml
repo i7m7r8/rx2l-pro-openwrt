@@ -7,8 +7,11 @@ on:
       - 'files/**'
       - 'tools/**'
       - 'tests/**'
-      - 'port/**'
       - 'scripts/**'
+      # NOT 'port/**': nothing under port/ is read by the build -- it is staged
+      # sources, reports and evidence. A port/** path filter turned every
+      # documentation commit into a 3-hour run (and pushed concurrent builds
+      # past the point where their logs were readable).
       - 'Dockerfile'
       - 'build.sh'
       - 'feeds.conf'
