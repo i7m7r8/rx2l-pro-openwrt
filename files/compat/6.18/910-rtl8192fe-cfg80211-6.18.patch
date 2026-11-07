@@ -1,0 +1,41 @@
+--- a/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c	2026-11-07 15:06:00.010994109 +0000
++++ b/target/linux/rtl819x/files-6.18/drivers/net/wireless/rtl8192fe/8192cd_cfg80211.c	2026-11-07 15:06:00.906994109 +0000
+@@ -6159,7 +6159,7 @@
+ 			{
+ 				if((hostapd_acs_scaning == 0 || !priv->pmib->miscEntry.auto_channel))
+ 				{
+-					cfg80211_ch_switch_notify(priv->dev, &chdef);
++					cfg80211_ch_switch_notify(priv->dev, &chdef, 0); /* 6.9 added link_id */
+ 				}
+ 			}
+ 		}
+@@ -7276,7 +7276,7 @@
+ 	.remain_on_channel = realtek_remain_on_channel,
+ 	.cancel_remain_on_channel = realtek_cancel_remain_on_channel,
+ 	.mgmt_tx = realtek_mgmt_tx,
+-	.mgmt_frame_register = realtek_mgmt_frame_register,
++	/* 6.9 removed .mgmt_frame_register (-> .update_mgmt_frame_registrations) */
+ 	.channel_switch = realtek_cfg80211_channel_switch,
+ 	.dump_survey = realtek_dump_survey,//survey_dump
+ 	.start_ap = realtek_start_ap,
+
+Notes on why these two and nothing else:
+
+* .mgmt_frame_register was removed from struct cfg80211_ops in 6.9, replaced by
+  .update_mgmt_frame_registrations(struct wiphy *, struct wireless_dev *,
+  struct mgmt_frame_regs *). The old callback only tracked which management
+  frames userspace wanted; monitor mode itself still works through .mgmt_tx and
+  cfg80211_mgmt_tx_status, so dropping the callback loses the bookkeeping but
+  not the feature. Mapping it properly means translating (frame_type, reg) into
+  the upd->interface_stypes/mgmt_stypes bitmaps, which cannot be validated
+  without the radio -- so it is dropped deliberately, not silently.
+
+* cfg80211_ch_switch_notify() gained the `link_id` argument in the same release
+  (6.18 header: `void cfg80211_ch_switch_notify(struct net_device *dev, struct
+  cfg80211_chan_def *chandef, unsigned int link_id)`). This driver has no MLO,
+  so 0 is the only correct value.
+
+Checked against include/net/cfg80211.h from torvalds/linux v6.18: the file uses
+82 cfg80211_*/ieee80211_* identifiers and every one of them resolves in the 6.18
+headers except these two and ten names that are the driver's own structures
+(cfg80211_event, cfg80211_cmd_queue, ...).

@@ -146,6 +146,27 @@ fi
 echo ">>> overlaying device support from $SELF_DIR/files/"
 cp -a "$SELF_DIR"/files/. .
 
+# ---- 3a-bis. compat patches for the 6.18 kernel -------------------------------
+# These edit the overlay's driver sources, so they cannot live in
+# target/linux/rtl819x/patches-6.18/ (those are applied to the base kernel tree
+# BEFORE files-6.18/ is copied into it, so a patch there cannot see this file).
+# Applied here, right after files/ has landed, and failing the build if they do
+# not apply -- a silent miss would only surface as a kernel compile error 40
+# minutes later.
+COMPAT_DIR="$SELF_DIR/files/compat/6.18"
+if [ -d "$COMPAT_DIR" ]; then
+	for cpat in "$COMPAT_DIR"/*.patch; do
+		[ -f "$cpat" ] || continue
+		echo ">>> compat: $(basename "$cpat")"
+		if ! patch -p1 --forward --dry-run <"$cpat" >/dev/null 2>&1; then
+			echo "!!! compat patch does not apply: $cpat" >&2
+			echo "    the overlay's sources changed; re-derive this patch before building" >&2
+			exit 1
+		fi
+		patch -p1 --forward <"$cpat" >/dev/null
+	done
+fi
+
 # Where our copy replaces one of the overlay's files, say so out loud. The
 # device profile lives in target/linux/rtl819x/image/rtl8197f.mk, which is the
 # overlay's file too (it carries Device/electra_rx23302): if they add something
