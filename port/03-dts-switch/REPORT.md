@@ -263,3 +263,33 @@ could be trusted. Both were tested locally, not assumed:
 So the chain is: 700 defines SWCONFIG → our 999 defines RTL8367B_PHY (depends on
 it) and adds the objects → the subtarget config sets both → the driver is built
 for the first time.
+
+## DT audit: every node either has a driver or provably does not need one
+
+Method: extract every `compatible` string from the board DTS **and** the platform
+`RTL8197F.dtsi` it includes, then look for each in the driver sources shipped in
+`files-6.18/`. 22 realised strings; result:
+
+| node compatible | bound by |
+|---|---|
+| `realtek,rtl8196b-pci` | `arch/mips/pci/pci-realtek.c` |
+| `realtek,rtl8197f-eth` | `rtl819x_eth.c` |
+| `realtek,rtl8197f-gpio` | `arch/mips/realtek/gpio.c` |
+| `realtek,rtl819x-intc` | `arch/mips/realtek/irq.c` |
+| `realtek,rtl819x-sysc` | `arch/mips/realtek/setup.c` |
+| `realtek,rtl8367b` | `rtl8367b.c` (wired by `patches-6.18/999`) |
+| `realtek,sheipa-spi` | `spi-sheipa.c` |
+| `realtek,rtl8197f-uart` | falls back to its second string, `snps,dw-apb-uart` → `8250_dw` |
+| `fixed-clock`, `fixed-layout`, `fixed-partitions`, `gpio-keys-polled`, `gpio-leds`, `jedec,spi-nor`, `mac-base`, `mips,mips24KEc`, `mti,cpu-interrupt-controller`, `simple-bus` | generic kernel drivers |
+| `tenda,rx2l-pro` | machine id — matched by `board.d` and the upgrade path, no driver expected |
+| `realtek,rtl8197f-soc`, `realtek,rtl819x-memc` | container / memory-controller nodes handled by `arch/mips/realtek/setup.c`, no driver expected |
+| `realtek,rtl8197f-wmac` | **no driver, and none needed**: with `CONFIG_WLAN_HAL_8197F` (not `_8198F`) and PCI off, `8192cd_osdep.c`'s init falls through to `rtl8192cd_init_one(NULL, NULL, &wlan_device[...], -1)` and builds the SoC radio from its compiled-in table. The node is documentation, not a binding. |
+
+One false positive worth recording so nobody re-finds it: the board DTS contains
+the string `pci10ec,<DEVICE-ID-FROM-lspci-nn>` — it is inside a `/* … */` block
+that documents the 5 GHz card's node *shape*, and is not DT content. The real ID,
+measured from the stock kernel's `pci_device_id` table, is `10ec:b832`.
+
+So "all DT is bound" is true in the only sense that matters: nothing in the tree
+is waiting for a driver that does not exist, and the two nodes that look
+unbound are either container nodes or a binding the driver does not use.
