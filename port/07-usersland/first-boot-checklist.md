@@ -137,3 +137,26 @@ nft list ruleset | head -20                                    # U2
 ls /usr/lib/ucode/ ; which fw4 swconfig iwinfo                 # U1 U4 K2
 sysupgrade -T openwrt-*-sysupgrade.bin                         # S1 S2 S3
 ```
+
+## The reference board's services are inert here (verified, not assumed)
+
+This target also carries the DIR-842/GWR1200AC board's uci-defaults and init
+scripts, and they are *enabled* in an image unless something stops them. Every
+one of them stops itself:
+
+| file | gate |
+|---|---|
+| `etc/uci-defaults/09_wireless-dualband-dir842` | `board_name = gwr1200ac-v1` or `exit 0` |
+| `etc/uci-defaults/10_wireless-5g-ifname-dir842` | same |
+| `etc/uci-defaults/11_dir842-htmode-ht20` | same |
+| `etc/uci-defaults/97-dir842-l2flush-enable` | same |
+| `etc/init.d/dir842-asic` (START=97) | same, inside `start()` |
+| `etc/init.d/dir842-l2flush` (START=98) | same |
+| `etc/init.d/asic-wifi-settle` (START=99) | same, and its own comment says it is "gated to gwr1200ac-v1" |
+
+`board_name` on this board is `tenda,rx2l-pro` (the DTS compatible's first
+string, written by `/lib/preinit/02_sysinfo`), so all seven exit before touching
+anything. That matters because `dir842-asic` and `dir842-l2flush` program switch
+and ASIC state — a single ungated one would fight this port's own switch setup.
+
+Checked by reading the gate in every file rather than trusting the names.
