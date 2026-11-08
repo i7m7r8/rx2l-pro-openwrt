@@ -23,6 +23,17 @@ Read the run's log for one of three outcomes: `BUILD FAILED` (it now prints the
 real error and a kernel `.config` survival list), the symbol assertion (fails
 with a line naming any of nine missing symbols), or a green build.
 
+```sh
+gh run list --limit 3                       # is 829540e done, and how
+gh run view <id> --log | grep -nE 'BUILD FAILED|MISSING CONFIG_|GATE FAIL|error:'
+```
+
+If it failed in the kernel again, the failure section is printed automatically;
+grep for `BUILD FAILED` and read the 80 non-plan lines under it. If the symbol
+assertion fired, grep `MISSING` — it names the symbol, and that is a config
+question, not a compiler one. If it is green, the artifacts are under
+`bin/targets/rtl819x/rtl8197f/` and the next action is the RAM boot.
+
 ## Verified against evidence (not against hope)
 
 | claim | evidence |
