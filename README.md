@@ -148,6 +148,16 @@ pre-flight dumps and the recovery ladder, is
    path, and the one that works when nothing on flash boots at all.
 5. **Direct MTD write** to `mtd3` from a root shell — the explicit fallback when
    the vendor flasher itself is what is misbehaving.
+6. **`sysupgrade`, once *this* port is already running** — the update path, not a
+   stock-to-OpenWrt one. `sysupgrade.bin` is the same container, written by
+   OpenWrt's own machinery (`PART_NAME=firmware`, `default_do_upgrade`) instead of
+   by a vendor tool, and it is the only path that preserves configuration.
+   `platform.sh` gates it before anything is erased: the container magic must be
+   `cr6c`, and the four bytes at `16+len` must be a plain `hsqs`/`sqsh` — so a
+   truncated download or a mis-built image is refused rather than written, and a
+   *vendor* container (whose rootfs magic is the mangled `nice`) is refused too,
+   because this kernel has no vendor magic patch. See
+   [`port/07-usersland/sysupgrade.md`](port/07-usersland/sysupgrade.md).
 
 ⚠ Without the symlink in place the webui rejects the plaintext artifact with
 `errCode=1` and touches no flash; that is the veto working, not a build failure. What still has to

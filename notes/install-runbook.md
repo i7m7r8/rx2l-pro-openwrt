@@ -152,6 +152,21 @@ Serial console is `115200` on `ttyS0` (measured from this board's cmdline).
   userdata, start clean" behaviour the vendor UI implies; no extra erase step
   exists or is needed.
 
+## 5b. Updating later (sysupgrade)
+
+Once this port boots, later updates do not go through any of the vendor tools:
+
+    sysupgrade -n /tmp/sysupgrade.bin        # or LuCI -> Backup/Flash firmware
+
+`platform.sh` checks the image *before* erasing anything — container magic
+`cr6c`, and a plain `hsqs`/`sqsh` superblock at exactly `16+len`. Both failures
+are refused with the offending value printed, so a truncated transfer cannot cost
+the running system. `-n` keeps no config; drop it to preserve `/etc/config`.
+
+What this path does **not** accept: a vendor container. Its rootfs magic is the
+mangled `nice`, and this kernel has no vendor magic patch, so it is rejected by
+design — the vendor image belongs on install paths 2–5, not here.
+
 ## 6. If it does not come back
 
 The bootloader in mtd1 is a Realtek stage-1 with a command monitor. Its strings
