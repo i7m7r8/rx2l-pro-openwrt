@@ -348,3 +348,33 @@ Lesson for the next symbol: before adding a Kconfig entry, check whether the
 base already has it (`git grep` in the openwrt tree at BASE_REV), because a
 duplicate definition does not "enable" anything — it re-opens a dependency graph
 that was already solved.
+
+## Open question: the pinmux write is in the kernel, not (provably) in the loader
+
+The DTS comment next to `realtek,smi-pinmux-bits` says:
+
+> Our own U-Boot writes 0x03300000 into the mux register at 0xB8000034
+
+The dumps do not support the "U-Boot" half of that. Searched:
+
+| artifact | `lui 0x0330` | `lui 0xb800` + `ori 0x0034` | whole word `0x03300000` |
+|---|---|---|---|
+| mtd1, raw partition | 0 | 0 | 0 |
+| mtd1, decompressed stage-1 (229,584 B) | 0 | 0 | 0 |
+| stock kernel (`kernel.lzma.out`) | **3** | 0 | 0 |
+
+So the constant is built by the **kernel** three times, and nothing in the
+loader we can read builds it at all. The register address would be formed from
+the `0xb8000000` base plus an offset, which is why no `lui/ori` pair exists.
+
+Consequences:
+
+* the pinmux programming hypothesis is still plausible — the kernel is the right
+  place for it — but the **attribution to U-Boot should be corrected** when the
+  DTS is next touched. It is a comment, and a DTS edit restarts an 80-minute
+  build, so the edit waits for the next functional change rather than forcing a
+  run for a sentence.
+* it does not change the switch wiring: SMI on `&gpio1` 24/23/26 matches the
+  RX23302 board that was verified on hardware, and CPU port 6 comes from the CFG
+  VLAN masks (`0x40` = bit 6 in both `lanvlan` and `wanvlan1`), not from this
+  pinmux question.
