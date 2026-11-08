@@ -266,8 +266,16 @@ CONFIG_WLAN_HAL_88XX=y
 CONFIG_WLAN_HAL_8197F=y
 CONFIG_RTL_ODM_WLAN_DRIVER=y
 CONFIG_PCI_HCI=y
-# CONFIG_PCI is not set
-# CONFIG_PCI_QUIRKS is not set
+# PCI: the RTL8197F's host controller drives the RTL8832BR card in the 5 GHz
+# slot. Enabling it needs three things that are easy to get wrong:
+#   * HAVE_PCI must be selected by the platform -- openwrt's own
+#     hack-6.18/700 patch does not do it, the overlay's 0006-realtek-have-pci
+#     patch does (select HAVE_PCI + select PCI_DRIVERS_LEGACY on REALTEK);
+#   * CONFIG_PCI_DRIVERS_LEGACY because arch/mips/pci/pci-realtek.c is written
+#     against `struct pci_controller` / register_pci_controller();
+#   * this line must not say "is not set", which is what kept the bus -- and
+#     therefore the card -- absent while the config file looked plausible.
+CONFIG_PCI=y
 CONFIG_RTL8192FE_RX23302=y
 CONFIG_WIRELESS_EXT=y
 CONFIG_WEXT_CORE=y
