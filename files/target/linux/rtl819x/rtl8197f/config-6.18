@@ -255,21 +255,39 @@ CONFIG_PHYLINK=y
 # symbols are set here instead.
 CONFIG_RTL8366_SMI=y
 CONFIG_RTL8367B_PHY=y
-# Радиочасть временно выключена: драйвер доходит до rtl8192cd_init_one
-# и виснет, а встроенным он собирается только как bool, то есть вешает
-# всю загрузку. Пока цель — рабочая проводная прошивка в постоянной
-# памяти. Сборочный файл вендора строит единый rtl8192cd.o, так что
-# позже его можно перевести в tristate и грузить модулем вручную.
-CONFIG_WLAN_HAL=y
-CONFIG_WLAN_HAL_88XX=y
-# CONFIG_WLAN_MACHAL_API is not set
-CONFIG_WLAN_HAL_8197F=y
-CONFIG_RTL_ODM_WLAN_DRIVER=y
-CONFIG_PCI_HCI=y
-# CONFIG_PCI is not set
-# CONFIG_PCI_QUIRKS is not set
+# ---- WiFi: the on-SoC 2.4 GHz radio and the 5 GHz card, one vendor driver ---
+# The overlay builds the vendored rtl8192fe 3.8.0 tree in-tree behind ONE
+# symbol, and it is NOT the vendor Kconfig's symbol set. Its patch 737 wires
+#   drivers/net/wireless/Kconfig  -> source "rtl8192fe/Kconfig.rx23302"
+#   drivers/net/wireless/Makefile -> obj-$(CONFIG_RTL8192FE_RX23302) += rtl8192fe/
+# and Kconfig.rx23302 defines exactly one thing:
+#   config RTL8192FE_RX23302      bool, depends on MIPS, default y
+#       select WIRELESS_EXT
+#       select WEXT_PRIV
+# The vendor's own 1451-line Kconfig is NOT sourced -- deliberately, rx23302.mk
+# says so at :3-5 (its symbols assume an out-of-tree/backports build). So none
+# of these exist in this tree: WLAN_HAL, WLAN_HAL_88XX, WLAN_HAL_8197F,
+# RTL_ODM_WLAN_DRIVER, PCI_HCI, SOC_WIFI, WLAN_MACHAL_API. The HAL's real
+# compile-time switches are Make variables, not kernel config: rx23302.mk:47
+# defines -DCONFIG_WLAN_HAL_8197G, -DCONFIG_WLAN_HAL_8812FE, -DCONFIG_RTL_8197F,
+# -DCONFIG_PCI_HCI, -DCONFIG_SOC_RFE_TYPE_0 and friends.
+# This file used to carry five of the dead symbols, which kconfig dropped
+# without a word; the comment around them claimed the radio was "temporarily
+# off" while doing the opposite. Both are gone. build.sh now asserts the
+# symbols that exist (RTL8192FE_RX23302, WEXT_PRIV/WIRELESS_EXT) instead of a
+# phantom one -- that assertion, not kconfig, is what would have gone red 95
+# minutes into a green build.
 CONFIG_RTL8192FE_RX23302=y
 CONFIG_WIRELESS_EXT=y
 CONFIG_WEXT_CORE=y
 CONFIG_WEXT_PRIV=y
 CONFIG_WEXT_PROC=y
+# PCI: the 5 GHz half of that driver is an RTL8812FE/8832BR on PCIe0 (the stock
+# kernel enumerates 10ec:b832, notes/firmware-audit.md), so the bus has to be
+# on for the card to be seen at all. It is OFF on this line and is the whole
+# difference on branch test/pci5g (CONFIG_PCI=y + HAVE_PCI for the SoC's own
+# Kconfig + CONFIG_PCI_QUIRKS). Turning it on here is the next step once the
+# compile is green: PCI_DRIVERS_LEGACY is already selected for REALTEK by the
+# overlay's patches-6.18/0006-realtek-have-pci.patch.
+# CONFIG_PCI is not set
+# CONFIG_PCI_QUIRKS is not set

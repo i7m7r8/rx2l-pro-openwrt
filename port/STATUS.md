@@ -1,38 +1,49 @@
-# Status snapshot — 2026-11-08 (round 36 of 40)
+# Status snapshot — 2026-11-08 (round 37 of 40)
 
 Not a facts file (that is `FACTS.md`) and not a plan (that is each track's
 `REPORT.md`). This is the short answer to "where is this port right now".
 
 ## In flight
 
-One GitHub Actions run: **`829540e`** (`42429513794`), started 00:23:16Z.
-It carries the first *identified* fix for the kernel-stage failure:
+One GitHub Actions run: **`40f5e9d`** (`42446968192`), started 04:28:41Z.
+It carries the first fix aimed at an error the compiler actually printed:
 
-* `patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch` **deleted** — it
-  redefined `RTL8367B_PHY`, which openwrt's own
-  `hack-6.18/700-swconfig_switch_drivers.patch` already defines, and the
-  duplicate produced
-  `error: recursive dependency detected! symbol SWCONFIG is selected by
-  RTL8367B_PHY / symbol RTL8367B_PHY depends on SWCONFIG`, so `syncconfig`
-  never completed and nothing was ever compiled;
-* `CONFIG_RTL8366_SMI=y` added — `RTL8367B_PHY` lives inside `if RTL8366_SMI`,
-  so without it the symbol is silently dropped;
-* plus everything in the "Verified" list below that is a build-side gate.
+* `mtdsplit_cvimg.c:49` said `const static` -> `-Werror=old-style-declaration`
+  -> `cc1: all warnings being treated as errors`. Now `static const`.
 
-Read the run's log for one of three outcomes: `BUILD FAILED` (it now prints the
-real error and a kernel `.config` survival list), the symbol assertion (fails
-with a line naming any of nine missing symbols), or a green build.
+Both runs before it (`42429513794` on rebase-latest at `829540e`, `42433172719`
+on test/pci5g at `1932146`) died on that same line and nothing else: it was the
+only `error:` in either 5000-line log, 95 minutes in. So the two previous
+"failures" have one root cause, and it is one word.
+
+Why `-Werror` is real and stays: OpenWrt implies it from the toolchain choice —
+`toolchain/gcc/Config.version:19` has `imply KERNEL_WERROR` under
+`GCC_USE_DEFAULT_VERSION` (GCC 14 is the default), and build.sh's kernel config
+step maps top-level `CONFIG_KERNEL_*` into the kernel namespace, which is what
+turns it into `CONFIG_WERROR=y` *after* `generic/config-6.18:8120`'s
+`# CONFIG_WERROR is not set` — last write wins. The platform overlay is
+hardware-tested at this same base rev with the same implied flag, so the
+warning was ours to fix, not the build's to relax.
+
+Why it appeared only now: this file had never been compiled. Every earlier run
+died before cc1 ran at all (the swconfig Kconfig cycle; then the missing
+realtek Kconfig symbol), so `drivers/mtd` was the first place the splitter
+reached the compiler.
 
 ```sh
-gh run list --limit 3                       # is 829540e done, and how
+gh run list --limit 3                       # is 40f5e9d done, and how
 gh run view <id> --log | grep -nE 'BUILD FAILED|MISSING CONFIG_|GATE FAIL|error:'
 ```
 
-If it failed in the kernel again, the failure section is printed automatically;
-grep for `BUILD FAILED` and read the 80 non-plan lines under it. If the symbol
-assertion fired, grep `MISSING` — it names the symbol, and that is a config
-question, not a compiler one. If it is green, the artifacts are under
-`bin/targets/rtl819x/rtl8197f/` and the next action is the RAM boot.
+Read the log for one of three outcomes: `BUILD FAILED` (the script prints the
+real error plus a kernel `.config` survival list), the symbol assertion (a line
+naming any of nine missing symbols), or a green build. Note the failure order
+this run reaches first: `drivers/mtd` is past, so the next compiler stops are
+`drivers/net/phy` (rtl8367b + our `rtl8367.h`, whose field use was re-checked
+against the driver and matches) and then `drivers/net/wireless/rtl8192fe` --
+the vendored 4.14 HAL, which no earlier run has compiled. If it is green, the
+artifacts are under `bin/targets/rtl819x/rtl8197f/` and the next action is the
+RAM boot.
 
 ## Verified against evidence (not against hope)
 
@@ -61,7 +72,7 @@ question, not a compiler one. If it is green, the artifacts are under
 
 ## Next actions, in order
 
-1. Read `829540e`'s result. If it failed, the log now names the cause; the symbol
+1. Read `40f5e9d`'s result. If it failed, the log names the cause; the symbol
    survival list says whether it was a config drop rather than a compiler.
 2. On green: download the artifacts, run `tools/check-cr6c.py --tenda` and
    `scripts/rx2lpro-image-gates.py webui` by hand (the build already ran both),

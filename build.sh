@@ -398,6 +398,14 @@ if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
 	grep -vE '^(make\[[0-9]+\]|  *make\[[0-9]+\])' "$BUILD_LOG" | tail -80 >&2
 	echo "--- and the last 40 lines regardless ---" >&2
 	tail -40 "$BUILD_LOG" >&2
+	# The 80-line tail above is useless exactly when it matters: with -j24 the
+	# failure scrolls away under a wall of unrelated warnings (the feeds emit
+	# dozens of "has a dependency on X, which does not exist" lines that are
+	# there on every build, green or not), so the run that failed on
+	# `const static` below 80 lines of plan noise had to be diagnosed from the
+	# V=s re-run instead. Grep first, tail second.
+	echo "--- every error:/undefined-reference line in the whole log ---" >&2
+	grep -nE 'error:|undefined reference to' "$BUILD_LOG" | tail -60 >&2 || true
 	echo "--- re-running target/linux with V=s so the error is explicit ---" >&2
 	make -j1 V=s target/linux/compile 2>&1 | tail -120 >&2 || true
 
@@ -414,8 +422,8 @@ if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
 		echo "--- kernel .config survival check ($KCFG) ---" >&2
 		for sym in CONFIG_SWCONFIG CONFIG_RTL8366_SMI CONFIG_RTL8367B_PHY \
 			   CONFIG_MTD_SPLIT_CVIMG_FW CONFIG_MTD_SPLIT_SQUASHFS_ROOT \
-			   CONFIG_NET_RTL819X CONFIG_WLAN_HAL_8197F CONFIG_RTL8192FE_RX23302 \
-			   CONFIG_SOC_RTL8197F CONFIG_PCI CONFIG_HAVE_PCI; do
+			   CONFIG_NET_RTL819X CONFIG_RTL8192FE_RX23302 CONFIG_WIRELESS_EXT \
+			   CONFIG_WEXT_PRIV CONFIG_SOC_RTL8197F CONFIG_PCI CONFIG_HAVE_PCI; do
 			if grep -q "^$sym=y" "$KCFG"; then
 				echo "    ok      $sym=y" >&2
 			elif grep -q "^# $sym is not set" "$KCFG"; then
@@ -451,10 +459,17 @@ fi
 echo
 echo ">>> asserting the kernel .config carries this board's drivers ($KCFG)"
 missing_syms=0
+# WLAN_HAL_8197F used to be first in this list and could never be satisfied:
+# the vendor's 1451-line Kconfig is not sourced (patch 737 sources
+# Kconfig.rx23302 instead), so kconfig dropped the symbol and this assertion
+# would have failed 95 minutes into a build whose compiler output was clean.
+# The driver's real switch is RTL8192FE_RX23302; WEXT_PRIV/WIRELESS_EXT are
+# what it selects for iwinfo and are asserted so that a future Kconfig change
+# cannot quietly take the wext backend away from LuCI.
 for sym in CONFIG_SWCONFIG CONFIG_RTL8366_SMI CONFIG_RTL8367B_PHY \
 	   CONFIG_MTD_SPLIT_CVIMG_FW CONFIG_MTD_SPLIT_SQUASHFS_ROOT \
-	   CONFIG_NET_RTL819X CONFIG_WLAN_HAL_8197F CONFIG_RTL8192FE_RX23302 \
-	   CONFIG_SOC_RTL8197F; do
+	   CONFIG_NET_RTL819X CONFIG_RTL8192FE_RX23302 CONFIG_WIRELESS_EXT \
+	   CONFIG_WEXT_PRIV CONFIG_SOC_RTL8197F; do
 	if grep -q "^$sym=y" "$KCFG"; then
 		echo "    ok      $sym=y"
 	else
