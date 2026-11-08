@@ -232,3 +232,47 @@ consequences:
 
 The env editor itself is still relevant for recovery — `bin/env` is the tool that
 writes the same 4-key environment the loader's disaster-web path reads.
+
+## 10. DRAM size: 128 MiB, from the device's own log
+
+The DTS declares
+
+```
+memory@0 { device_type = "memory"; reg = <0x0 0x8000000>; };   /* 128 MiB */
+```
+
+and that number was previously *spec*, not evidence — the `meminfo` capture in
+the first pull came back empty (`head: applet not found`), so there was nothing in
+the dumps to point at. There is now: the syslog archive the device itself exports
+(`logs/syslog/sys_info.log`, also inside `syslog.tar` and the CGI
+`DownloadSyslog` dumps) contains a full `/proc/meminfo`:
+
+```
+MemTotal:         115744 kB
+MemFree:           39532 kB
+Buffers:            2008 kB
+Cached:            27652 kB
+SwapTotal:             0 kB
+```
+
+115,744 KiB = 113 MiB of usable RAM, which is what a 128 MiB part reports after
+the kernel image, its own page tables and the firmware/reserved regions are taken
+out — and `top -n1` in the same file agrees: `Mem: 76180K used, 39564K free`
+(115,744 total). So the DTS memory node is evidence-backed after all, by the
+device rather than by the product page.
+
+The same file pins the software this port replaces:
+
+```
+cat /etc/fireversion.cfg:
+fireversion=AX2_PRO_V2_V16.03.51.18(6989)_cn
+builder: chenpeng at develop-02
+buildtime: 2026-04-13-16:19
+```
+
+which matches the stock kernel's build stamp (`Mon Apr 13 16:18:38 CST 2026`,
+one minute earlier — kernel built, then the image packed).
+
+**Caveat for anyone re-reading that file:** it also contains per-unit identifiers
+(MACs, hostnames, client lists). Nothing per-unit is reproduced here; only the
+memory and version lines are quoted.

@@ -44,8 +44,9 @@ with a line naming any of nine missing symbols), or a green build.
 * **anything needing silicon**: boot, Ethernet link, switch programming, MIB
   application, 5 GHz. `port/07-usersland/first-boot-checklist.md` is the order to
   check them in.
-* the **128 MiB** memory node is from spec, not from our dumps (the device's
-  `meminfo` capture came back empty).
+* nothing else. (The 128 MiB memory node used to be listed here as spec-only;
+  it is now evidence-backed — the stock syslog shows `MemTotal: 115744 kB`, see
+  `notes/firmware-audit.md` §10.)
 
 ## Next actions, in order
 
