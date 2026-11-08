@@ -276,3 +276,34 @@ one minute earlier — kernel built, then the image packed).
 **Caveat for anyone re-reading that file:** it also contains per-unit identifiers
 (MACs, hostnames, client lists). Nothing per-unit is reproduced here; only the
 memory and version lines are quoted.
+
+## 11. The interrupt table names the two radios and their IRQs
+
+The stock syslog's `sys_info.log` carries a `/proc/interrupts` capture, which
+settles three things this port had been inferring:
+
+```
+           CPU0
+  2:        243      MIPS   2  IRQ cascade
+  4:          0      MIPS   4  eth0
+  5:     968696      MIPS   5  rtk_wifi6
+  6:    4711710      MIPS   6  wlan1
+  7:     661731      MIPS   7  timer
+ 17:        243      ICTL  serial
+ 24:          0      ICTL  gpio cascade1
+ 25:          0      ICTL  gpio cascade2
+```
+
+* **IRQ 5 is the 5 GHz card** (`rtk_wifi6`) and **IRQ 6 is the 2.4 GHz WMAC**
+  (`wlan1`). The DTS `pcie0` node uses `interrupts = <5>`, and this is the
+  evidence for it -- the earlier claim in that comment was unsourced.
+* Enabling `CONFIG_PCI` therefore cannot disturb the 2.4 GHz path: different IRQ,
+  different block.
+* **The radio naming is confirmed**: the 2.4 GHz radio is `wlan1` and the 5 GHz
+  card is `wlan0`, matching the apmib's group split (`HW_WLAN0_*` = 5 GHz,
+  `HW_WLAN1_*` = 2.4 GHz) that the calibration code relies on.
+* `eth0` is on IRQ 4, alone -- the Ethernet MAC and the switch are not sharing an
+  interrupt with either radio.
+
+`ERR: 13` at the bottom is the stock kernel's error counter, not a device fault;
+it is quoted only so the table matches the dump exactly.
