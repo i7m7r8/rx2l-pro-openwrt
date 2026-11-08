@@ -292,3 +292,26 @@ Anything the compiler finds next is a *different* class of problem -- argument
 counts and types inside function bodies, which a struct diff cannot see. If the
 next build fails, the diagnostics now print the error and the fix should be
 applied the same way: a named patch under `compat/6.18/`.
+
+### Sweep for removed APIs in every file that is actually compiled
+
+A struct diff cannot see removed *functions*, so the compiled HAL sources (usb/
+and sdio/ excluded — not built here) were swept for APIs that disappeared before
+6.18. Every hit is either handled or not compiled:
+
+| API | hits | verdict |
+|---|---|---|
+| `init_timer(` | 65 in `8192cd_osdep.c`, plus ioctl/led/psk/pwrctrl/util/mesh/phydm | handled by the overlay's `compat_legacy_timer.h`, which replaces the type and shims `init_timer`/`mod_timer`/`del_timer` for 6.18 |
+| `create_proc_entry` | `8192cd_proc.c`, `8192cd_osdep.c` | inside the old-kernel `#else`; the 6.18 branch uses `proc_ops` + `proc_create_data` |
+| `skb->nh` | `8192cd_rx.c` | inside `#if defined(LINUX_2_6_22_) … #else`; 6.18 takes the `network_header` branch |
+| `->trans_start` | `8192cd_tx.c`, `core/8192cd_core_tx.c`, `mesh_ext/mesh_tx.c` | inside `#if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)` |
+| `SET_MODULE_OWNER` | `8192cd_osdep.c` | inside the `#else` of `#ifdef LINUX_2_6_24_` ("obsolete from 2.6.24") |
+| `get_fs()` / `set_fs()` | `8192cd_comapi.c`, `Hal8814BFirmware.c` | comapi's copy is inside `#ifdef CONFIG_RTL_COMAPI_CFGFILE` (not set — `rx23302.mk` sets only `COMAPI_WLTOOLS`); the 8814B file belongs to a different chip |
+| `do_gettimeofday` | `8192cd_util.c` | **only a comment** — the code was already ported to `ktime_get_real_ts64` |
+| `complete_and_exit`, `netif_rx_ni`, `kernel_thread`, `pci_find_device` | usb/sdio only | not compiled |
+
+So in the files that build for this board, the only removed-field problems are the
+three `cfg80211_ops` ones already fixed in `compat/6.18/`. What a scan like this
+**cannot** catch is a changed *number or type* of arguments on a function that
+still exists — `cfg80211_ch_switch_notify(dev, chandef)` was exactly that, and it
+took a header read rather than a symbol search to find.
