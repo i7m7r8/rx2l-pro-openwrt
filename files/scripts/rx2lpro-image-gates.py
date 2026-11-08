@@ -546,6 +546,20 @@ def main(argv=None) -> int:
                    help="accept a vendor-mangled squashfs magic (stock dumps only)")
     c.set_defaults(func=cmd_container)
 
+    w = sub.add_parser("webui")
+    w.add_argument("image")
+    w.add_argument("--label", default="rx2lpro")
+    w.add_argument("--expect-cls", type=int, default=2,
+                   help="check_fw_type() must report this (2 = KernelFS)")
+    w.add_argument("--product-id", type=lambda v: int(v, 0), default=0x00031053)
+    w.add_argument("--kernelfs-max", type=parse_size, default="15872k")
+    # forwarded to the container check that runs on the payload at +0x40
+    w.add_argument("--expect-start", type=lambda v: int(v, 0), default=None)
+    w.add_argument("--expect-burn", type=lambda v: int(v, 0), default=None)
+    w.add_argument("--allow-mangled", action="store_true",
+                   help="accept a vendor-mangled squashfs magic (stock dumps only)")
+    w.set_defaults(func=cmd_webui)
+
     l = sub.add_parser("lzma-size")
     l.add_argument("image")
     l.add_argument("--limit", type=parse_size, default="16M")

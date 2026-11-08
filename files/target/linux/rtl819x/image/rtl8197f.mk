@@ -169,6 +169,23 @@ endef
 # image that no longer fits mtd3 can never be produced. 15872k = 0xf80000
 # (the whole mtd3 KernelFS region). padjffs2 rounds up to a 64k erase sector,
 # so this is evaluated before pad-rootfs AND again after it.
+# The one gate that decides whether the stock webui will even accept the file:
+# check_fw_type() -> check_fw_valid() -> check_fw_crc() -> check_mtd_size(), as
+# decompiled from libcommonprod.so 0x2a518, then the container rules at +0x40.
+# It accepts the vendor's own plaintext image (verified against the decrypted
+# OTA, exit 0) and rejects a one-byte corruption, so it is a real check rather
+# than a formality -- and it is the difference between "we built a file" and
+# "the router will take this file through its own upgrade page".
+define Build/rx2lpro-webui-gate
+	python3 $(TOPDIR)/scripts/rx2lpro-image-gates.py webui "$@" \
+		--label $(DEVICE_NAME) \
+		--expect-cls 2 \
+		--product-id 0x00031053 \
+		--kernelfs-max $(IMAGE_SIZE) \
+		--expect-start $(CVIMG_LOADER_START_ADDR) \
+		--expect-burn $(CVIMG_KERNEL_BURN_ADDR)
+endef
+
 define Build/rx2lpro-firmware-budget
 	python3 $(TOPDIR)/scripts/rx2lpro-image-gates.py budget \
 		--image "$@" \
@@ -270,7 +287,8 @@ define Device/tenda_rx2lpro
 	append-rootfs | \
 	rx2lpro-firmware-budget | \
 	pad-rootfs | \
-	tenda-wrap
+	tenda-wrap | \
+	rx2lpro-webui-gate
   # 3. sysupgrade: RAW, not sysupgrade-tar. PART_NAME=firmware +
   #    default_do_upgrade pipes `get_image` straight into
   #    `mtd write - firmware` (package/base-files/files/lib/upgrade/common.sh
