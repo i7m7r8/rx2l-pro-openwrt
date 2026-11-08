@@ -400,6 +400,33 @@ if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
 	tail -40 "$BUILD_LOG" >&2
 	echo "--- re-running target/linux with V=s so the error is explicit ---" >&2
 	make -j1 V=s target/linux/compile 2>&1 | tail -120 >&2 || true
+
+	# A whole class of failure in this port is silent: set a CONFIG_ in the
+	# target config, have no Kconfig define it (or have its dependencies
+	# unmet), and kconfig drops it without a word -- the feature is simply
+	# absent from the image. The switch driver spent days in that state, and
+	# then failed the other way: a duplicate definition created a recursive
+	# dependency that stopped syncconfig entirely.
+	#
+	# So on failure, report what actually SURVIVED in the kernel .config.
+	KCFG=$(ls build_dir/target-*/linux-*/linux-*/.config 2>/dev/null | head -1)
+	if [ -n "$KCFG" ]; then
+		echo "--- kernel .config survival check ($KCFG) ---" >&2
+		for sym in CONFIG_SWCONFIG CONFIG_RTL8366_SMI CONFIG_RTL8367B_PHY \
+			   CONFIG_MTD_SPLIT_CVIMG_FW CONFIG_MTD_SPLIT_SQUASHFS_ROOT \
+			   CONFIG_NET_RTL819X CONFIG_WLAN_HAL_8197F CONFIG_RTL8192FE_RX23302 \
+			   CONFIG_SOC_RTL8197F CONFIG_PCI CONFIG_HAVE_PCI; do
+			if grep -q "^$sym=y" "$KCFG"; then
+				echo "    ok      $sym=y" >&2
+			elif grep -q "^# $sym is not set" "$KCFG"; then
+				echo "    OFF     $sym is not set (dropped or deselected)" >&2
+			else
+				echo "    ABSENT  $sym (no Kconfig defines it - config typo?)" >&2
+			fi
+		done
+	else
+		echo "--- no kernel .config was produced (failed before config) ---" >&2
+	fi
 	echo "=============== END BUILD LOG ==================" >&2
 	exit 1
 fi

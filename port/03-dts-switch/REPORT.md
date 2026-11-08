@@ -222,7 +222,7 @@ Fixed in this tree, additively (nothing under the platform overlay is edited):
 | path | what it supplies |
 |---|---|
 | `files/target/linux/rtl819x/files-6.18/drivers/net/phy/rtl8367.h` | the header `rtl8367b.c` quote-includes; types/enums only, taken from an OpenWrt-lineage tree (GPL-2.0, `_RTL8367_H`) |
-| `files/target/linux/rtl819x/patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch` | `obj-$(CONFIG_RTL8367B_PHY) += rtl8367b.o rtl8366_smi.o` plus the Kconfig entry that makes the symbol exist |
+| ~~`files/target/linux/rtl819x/patches-6.18/999-net-phy-wire-rtl8367b-switch-driver.patch`~~ | ~~`obj-$(CONFIG_RTL8367B_PHY) += rtl8367b.o rtl8366_smi.o` plus the Kconfig entry that makes the symbol exist~~ — **DELETED, see the correction at the end of this file: openwrt's 700 patch already defines both, and this duplicate broke `syncconfig`** |
 | `rtl8197f/config-6.18` | drops `CONFIG_RTL8366_SMI{,_DEBUG_FS}`, which no Kconfig defines either; the objects ride on the RTL8367B_PHY line |
 
 The patch's context is the real `drivers/net/phy/{Makefile,Kconfig}` of Linux

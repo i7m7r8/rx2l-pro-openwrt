@@ -109,7 +109,7 @@ subsystem** — and the subsystem is the one that blocks the driver.
 | hardware | driver | state on this base |
 |---|---|---|
 | RTL8197F SoC ethernet + HW NAT | `rtl819x_eth.c` + `rtl819x_hwnat.c` | ✔ present, `CONFIG_NET_RTL819X=y`, 720 patch builds both |
-| external RTL8367RB switch | `rtl8367b.c` + `rtl8366_smi.c` | ✔ present, **was never compiled** — no header/Makefile/Kconfig; wired this week (`patches-6.18/999`) |
+| external RTL8367RB switch | `rtl8367b.c` + `rtl8366_smi.c` | ✔ present, **was never compiled** — no header/Makefile/Kconfig; now selected by `CONFIG_RTL8366_SMI=y` + `CONFIG_RTL8367B_PHY=y` against openwrt's own `700-swconfig_switch_drivers.patch` (a `patches-6.18/999` of ours was deleted: it duplicated the symbol and produced a Kconfig recursive dependency — see `port/03-dts-switch/REPORT.md`) |
 | on-SoC 2.4 GHz WMAC | `rtl8192fe` HAL | ✔ present, wired by patch 737, config symbols real |
 | SPI NOR, GPIO, timers, IRQ | platform code | ✔ `arch/mips/realtek/*` |
 | **PCIe root complex** | `arch/mips/pci/pci-realtek.c` | ⚠ **present but switched off**: `# CONFIG_PCI is not set` (`rtl8197f/config-6.18:244`) |
