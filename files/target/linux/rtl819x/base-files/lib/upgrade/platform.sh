@@ -29,6 +29,42 @@ platform_check_image() {
 			echo "Invalid image: expected cr6c firmware header, got 0x$magic"
 			return 1
 		fi
+
+		# The magic alone says "right target", not "intact". Check the second
+		# half of the container contract BEFORE anything is erased: the rootfs
+		# superblock must sit at exactly 16+len, and be a plain `hsqs` (our
+		# kernel has no vendor magic patch). A truncated download or a
+		# mis-built image otherwise writes a container the loader refuses,
+		# which is recoverable only through the bootloader monitor.
+		#
+		# dd seeks for skip=, so this costs no reads; it reads 4 bytes at two
+		# offsets. Values are big-endian, so hexdump's byte order is used
+		# rather than od's host-order words.
+		local lenb len roff rmagic
+		lenb=$(dd if="$1" bs=1 skip=12 count=4 2>/dev/null |
+			hexdump -v -e '4/1 "%02x"')
+		case "$lenb" in
+		""|*[!0-9a-f]*)
+			echo "Invalid image: cannot read the container length"
+			return 1
+			;;
+		esac
+		len=$((0x$lenb))
+		if [ "$len" -lt 16 ] || [ "$((16 + len))" -gt "$(wc -c <"$1")" ]; then
+			echo "Invalid image: container length 0x$lenb does not fit the file"
+			return 1
+		fi
+		roff=$((16 + len))
+		rmagic=$(dd if="$1" bs=1 skip=$roff count=4 2>/dev/null |
+			hexdump -v -e '4/1 "%02x"')
+		case "$rmagic" in
+		68737173|73717368) ;;	# hsqs / sqsh
+		*)
+			echo "Invalid image: no squashfs at 16+len ($(printf '0x%x' "$roff"))," \
+				"got 0x$rmagic"
+			return 1
+			;;
+		esac
 		return 0
 		;;
 	gwr1200ac-v1)

@@ -112,14 +112,15 @@ possible place to discover an off-by-two, and this repo already patched the
 parser to try exact → aligned → scan
 (`files/target/linux/generic/files/drivers/mtd/mtdsplit/mtdsplit_cvimg.c`).
 
-The staged `platform_check_image` closes the loop from the other side: it reads
+The shipped `platform_check_image` closes the loop from the other side: it reads
 `len` out of the *image's own header* and looks for `hsqs`/`sqsh` at byte
 `16+len` **before** any erase. So the three independent things now have to
 agree, and each is checked in a different place:
 
 | assertion | who checks it | when |
 |---|---|---|
-| squashfs is at `16+len`, un-aligned | `platform.sh` (new) | before writing |
+| container magic `cr6c` | `platform.sh` | before writing |
+| squashfs at `16+len` is a plain `hsqs`/`sqsh` | `platform.sh` | before writing |
 | container magic / checksum / no `nice` mangling | `tools/check-cr6c.py` | CI, after build |
 | parser tries exact first | `mtdsplit_cvimg.c` | every boot |
 
@@ -245,3 +246,23 @@ next:
 3. **`sysupgrade -T` dry run must be exercised in CI-adjacent testing** — it is
    the only path that runs `platform_check_image` without writing, and every
    bug in §3 is catchable that way on a bench box running our own image.
+
+### Status: implemented, and tested on three fixtures
+
+The check described above was written up while still staged; it is now in the
+shipped `platform.sh` and was exercised outside the target against:
+
+| fixture | result |
+|---|---|
+| container with `hsqs` at `16+len` | `rc=0` — accepted |
+| this unit's stock container (`nice` at `16+len`) | `rc=1` — `no squashfs at 16+len (0x3c0812), got 0x6e696365` |
+| the same image truncated two bytes past the offset | `rc=1` — `got 0x6873` |
+
+The `nice` rejection is the intended behaviour, not a regression: our kernel has
+no vendor magic patch, so a stock container is not something this board can
+sysupgrade *to* — the vendor image belongs on the loader/webui path, not here.
+
+`hexdump` is what the check uses to read big-endian fields. That is safe on the
+target because OpenWrt's own `get_magic_long()` (which the same function already
+called) uses `hexdump -v -e`, so the binary is present in any OpenWrt image; it
+was only missing on the host used for this test, where a shim stood in.
