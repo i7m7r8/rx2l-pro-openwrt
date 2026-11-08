@@ -319,8 +319,17 @@ define Device/tenda_rx2lpro
   # build at the very end, hours in. An absent radio is a smaller failure than a
   # defconfig symbol that cannot build; track 05 adds this back together with the
   # package definition that makes it true.
+  # kmod-nft-offload, NOT kmod-ipt-offload: the on-SoC hardware NAT in this
+  # tree is a flowtable backend (ndo_setup_tc -> TC_SETUP_FT), armed by an
+  # nftables `flowtable`, so the kernel side is NFT_FLOW_OFFLOAD and the
+  # userspace side is firewall4. kmod-ipt-offload is the iptables xt_FLOWOFFLOAD
+  # target from the 4.14 line and iptables is not in this image at all --
+  # seed.config:53 says exactly that, and port/04-eth-hwnat/offload-package.md:77
+  # states it as a rule ("kmod-ipt-offload must NOT be carried forward"). The
+  # package was still listed here, which is the kind of contradiction that only
+  # shows up as ~1 MB of unused xtables in a built image.
   DEVICE_PACKAGES := kmod-leds-gpio kmod-gpio-button-hotplug \
-	ppp ppp-mod-pppoe kmod-nf-flow kmod-ipt-offload iperf3 tcpdump-mini \
+	ppp ppp-mod-pppoe kmod-nf-flow kmod-nft-offload iperf3 tcpdump-mini \
 	swconfig
 endef
 TARGET_DEVICES += tenda_rx2lpro
