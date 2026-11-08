@@ -1,5 +1,9 @@
 # DIR-842-only assets, kept out of an RX2L Pro image
 
+*(Moved here from a duplicate `port/07-userspace/` directory: two tracks
+shared the 07 number, and this one had no REPORT.md. The content belongs
+with the userspace track that owns base-files and sysctl decisions.)*
+
 This tree builds exactly one device: `tenda_rx2lpro` (see
 `files/target/linux/rtl819x/image/rtl8197f.mk`, which replaced the 4.14 image
 Makefile and its DIR-815/822/RE708/GWR profiles). The DIR-842 material inherited
