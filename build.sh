@@ -513,7 +513,7 @@ for f in $BIN/*factory-cr6c.bin $BIN/*tenda-plaintext.bin $BIN/*.itb; do
 	# in target/linux/rtl819x/image/Makefile:27 == CVIMG_LOADER_START_ADDR in
 	# the device profile), not the vendor's 0x80d00000.
 	if ! python3 "$SELF_DIR/tools/check-cr6c.py" $args \
-		--expect-start "${EXPECT_START:-0x81000000}" "$f"; then
+		--expect-start "${EXPECT_START:-0x82000000}" "$f"; then
 		echo "!!! $f FAILED verification"
 		rc=1
 	fi

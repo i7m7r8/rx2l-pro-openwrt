@@ -82,7 +82,7 @@ STOCK_DUMP_CANDIDATES = ['/tmp/work4/mtd3_KernelFS.bin', '/tmp/mtd3_KernelFS.bin
 
 # These four mirror the image Makefile device block. If they drift apart from
 # target/linux/*/image/Makefile, cases 6/7/9 are what catch it.
-START = 0x81000000          # CVIMG_LOADER_START_ADDR == LZMA_TEXT_START
+START = 0x82000000          # CVIMG_LOADER_START_ADDR == LZMA_TEXT_START
 BURN = 0x40000              # CVIMG_KERNEL_BURN_ADDR == mtd3 flash offset
 KREF = 0x808d45c0           # CVIMG_TENDA_KREF, header +0x14
 LOADADDR = 0x80000000       # where the loader decompresses to
@@ -488,17 +488,23 @@ def case_budget():
     vendor_kernel = 13384292      # measured, case 8 / LZMA-alone header at +0x2818
     for size, loader, should_pass, why in (
             (vendor_kernel, START, True,
-             'the vendor kernel, under our 0x81000000 loader'),
+             'the vendor kernel, under our 0x82000000 loader'),
             (vendor_kernel, 0x80d00000, True,
              'the vendor kernel under the vendor 0x80d00000 loader (247 KiB spare)'),
             (13700000, 0x80d00000, False,
              'a 313 KiB kernel bump bricks the vendor geometry'),
             (13700000, START, True,
-             'the same bump is free at 0x81000000'),
-            (16777216, START, False,
-             'exactly 16 MiB overruns the running loader'),
-            (17000000, START, False,
-             'a 6.18 kernel that grew too big')):
+             'the same bump is free at 0x82000000'),
+            # START is 0x82000000 now, i.e. a 32 MiB window minus the 64 KiB
+            # reserve: 0x1ff0000 = 33554432 - 65536 = 33488896.
+            (16777216, START, True,
+             '16 MiB now fits -- it is half the window, not all of it'),
+            (33488896, START, True,
+             'exactly 32 MiB - 64k is the last size that fits'),
+            (33488897, START, False,
+             'one byte over the 32 MiB - 64k window'),
+            (34000000, START, False,
+             'a 6.18 kernel that grew past the window')):
         # run the real gate binary, not a re-implementation
         fd, path = tempfile.mkstemp(prefix='kbin-')
         os.close(fd)

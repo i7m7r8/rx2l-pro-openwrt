@@ -242,7 +242,7 @@ the only misses.
   already-ignored `/openwrt/`. Do **not** add it to `.gitignore` under the repo root, or
   someone will eventually vendor it by accident. Also: `build.sh.new` must be committed
   executable, and `tools/check-cr6c.py` is still invoked with
-  `--expect-start 0x81000000` (our loader link address, `image/Makefile:27`).
+  `--expect-start 0x82000000` (our loader link address, `image/rtl8197f.mk`).
 * **orchestrator** — `feeds.conf`'s "master dropped cgi-io / miniupnpd does not resolve"
   story is now false on this pin and `feeds.conf.new` says so; the 19.07 branches are gone
   from the picture entirely.

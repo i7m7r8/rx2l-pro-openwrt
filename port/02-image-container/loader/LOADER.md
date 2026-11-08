@@ -188,10 +188,12 @@ serial port into a build error.
   That machinery exists because those boards' stock headers point at
   0x80a00000 and the decompressed kernel there overwrote a loader linked at
   the same address. We choose our own header, so `start_addr == link addr ==
-  0x81000000` and the LZMA stream is read from *above* the destination the
-  whole time: source ≥ 0x81000000, destination 0x80000000..0x81000000. No
-  overlap is possible while the kernel stays under 16 MiB, which the gate now
+  0x82000000` and the LZMA stream is read from *above* the destination the
+  whole time: source ≥ 0x82000000, destination 0x80000000..0x82000000. No
+  overlap is possible while the kernel stays under 32 MiB, which the gate
   enforces. One variable instead of two, no relocation, no overlap checker.
+  (The value was 0x81000000 -- a 16 MiB window -- until the initramfs image
+  measured 18,201,116 bytes and the gate refused it; see §6.)
 * `ar71xx_regs.h`, `config.h`, `cp0regdef.h`, `cache_9xD.c`, `inflate.c` —
   APU/rtl838x leftovers of the secondary base.
 * `rtkload/` as a *build input*: it is the vendor SDK loader dump (a
@@ -217,10 +219,56 @@ initramfs. It needs no flash write:
 
 1. serial + power-on with ESC (stage-1's ESC poll at 0x800109b8 aborts the boot
    into the RealTek command monitor), or the reset-strap disaster path;
-2. `XMOD` the image into RAM at 0x81000000, then `J: 0x81000000`;
-3. expected: `Jump to image start:0x81000000`, then the loader's own banner
+2. `XMOD` the image into RAM at 0x82000000, then `J: 0x82000000`;
+3. expected: `Jump to image start:0x82000000`, then the loader's own banner
    ("OpenWrt kernel loader for Realtek RTL819X"), `Decompressing kernel... done!`,
    `Starting kernel at 80000000...`.
 
-That single boot proves the header contract, the 16 MiB budget, the ISA, the
+That single boot proves the header contract, the 32 MiB budget, the ISA, the
 watchdog fix and the console, all before anything is written to mtd3.
+
+One thing that boot does *not* prove, and no dump can: that the stock stage-1
+will hand control to a loader linked this high. §6 is the disassembly that
+makes it a measurement rather than a hope.
+
+
+## 6. start_addr is not constrained (disassembly of the stock stage-1)
+--------------------------------------------------------------------------------
+The decompiled loader is in `ghidra/stage1-jump-to-image.c` (provenance and
+sha256 in its header). Two functions are the whole contract:
+
+* `FUN_8001081c` -- reads 16 bytes from SPI flash, byte-swaps the BE words at
+  +0x04/+0x08/+0x0c, then
+
+      FUN_80009eb8(start | 0x20000000, flash + 0x50000010, len - 2);
+      FUN_8000f8e4("Jump to image start:0x%x...", hdr[4]);
+      pcVar4 = *(code **)(hdr + 4);
+      (*pcVar4)();
+
+  `start` is used verbatim: OR 0x20000000 to get the KSEG0 alias for the copy
+  destination, and the raw 0x8xxxxxxx value as the jump target. Nothing is
+  compared against it, and neither 0x81000000 nor the vendor's 0x80d00000
+  occurs anywhere in the 229,584-byte image -- verified by grepping the whole
+  decompiled dump, not just this function.
+* `FUN_80010be4` -- the only rejection path before the jump: compare the 4-byte
+  signature against `cs6c`/`cr6c` ("No sys signature at %X!"), then the
+  additive BE-u16 zero-sum over `len` bytes from +0x10 ("check failed, ret:%d,
+  sum:%x"). Its return value is the count of 256-byte blocks walked, which is
+  what the rootfs-signature branch tests -- the vestigial path that would have
+  needed a ~512-byte kernel.
+
+Consequences, and why 0x82000000 is a safe constant for us:
+
+1. Any `0x8xxxxxxx` address is honoured, so the window is ours to choose. The
+   constraint is physical: `start | 0x20000000` must land in DRAM.
+   0x82000000 -> 0xA2000000 -> physical 0x02000000 = 32 MiB into the 128 MiB
+   this board has (`notes/firmware-audit.md` §10), so both the copy and the
+   jump land in RAM.
+2. The initramfs image decompresses to 18,201,116 bytes, which is why the
+   16 MiB window had to go: the gate rejected it and the install stage stopped
+   before producing any artifact (run 42453851939). 32 MiB leaves ~14.6 MiB of
+   headroom over the current initramfs kernel.
+3. The window is the only thing that changed. `LOADADDR` stays 0x80000000, the
+   container layout is untouched, and the two values that must agree do agree
+   by construction -- `CVIMG_LOADER_START_ADDR` is both the header word and
+   `LZMA_TEXT_START` for the loader build (`image/rtl8197f.mk`).

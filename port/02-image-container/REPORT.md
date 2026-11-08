@@ -1,7 +1,8 @@
 
 ## Reaudit: the load address, the stub, and the overlap guard
 
-The recipe's `CVIMG_LOADER_START_ADDR` is `0x81000000` while the hardware-verified
+The recipe's `CVIMG_LOADER_START_ADDR` is `0x82000000` (it was `0x81000000` until
+the initramfs image outgrew a 16 MiB window) while the hardware-verified
 reference board uses `0x80A00000`. That is not a discrepancy — the header field
 must equal the **stub's** link address, and each board links its own stub:
 

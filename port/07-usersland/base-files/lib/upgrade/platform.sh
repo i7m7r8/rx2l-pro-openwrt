@@ -45,7 +45,7 @@ RAMFS_COPY_DATA=""
 RX2LPRO_PART_BYTES=$((0xf80000))	# mtd3 KernelFS, from the DTS
 RX2LPRO_HDR_BYTES=16			# cr6c header
 RX2LPRO_SUM_BYTES=2			# cvimg checksum trailing the payload
-RX2LPRO_EXPECT_START=0x81000000		# == LZMA_TEXT_START, image/Makefile
+RX2LPRO_EXPECT_START=0x82000000		# == LZMA_TEXT_START, image/Makefile
 
 rx2lpro_be32() {	# $1 = file, $2 = decimal offset -> hex value
 	hexdump -v -n 4 -s "$2" -e '1/1 "%02x"' "$1" 2>/dev/null

@@ -79,7 +79,10 @@ run on this strap — if you find a BE assumption anywhere, that is a bug.
   RSA/TDE01/KM/squashfs gate on the boot path** — signature checks live in
   `tendaupgrade` (userspace) and the KM module, not in the loader.
 * U-Boot never decompresses the kernel; the container's own LZMA stub does. Keep
-  the decompressed kernel **< 16 MiB** because the loader runs at `0x81000000`.
+  the decompressed kernel **< 32 MiB** because the loader links at `0x82000000`
+  (window = `start_addr - LOADADDR`, so it is our choice: `FUN_8001081c` uses
+  +0x04 verbatim, LOADER.md §6). It was 16 MiB until the initramfs image measured
+  18,201,116 bytes.
 * Disaster-web/TFTP recovery is gated by `0xb8003528 & 2` (reset strap), separate
   from the kernel path.
 
@@ -152,7 +155,7 @@ sibling Tenda boards already ported in the two bases.
 
 | | path | base | kernel | switch | eth/offload | image |
 |---|---|---|---|---|---|---|
-| A (primary) | `/tmp/rebase/openwrt-rx23302` | upstream openwrt@`82e2e4f4` + repo overlay | **6.18.41** | swconfig `rtl8367b.c` (RB family explicit) | PHYLINK `rtl819x-eth` + `rtl819x_hwnat.c` on `flow_offload` (measured 857–929 Mbit/s) | `tools/cvimg` w/ cr6b/cr6c/cs6c, `LZMA_TEXT_START=0x81000000` |
+| A (primary) | `/tmp/rebase/openwrt-rx23302` | upstream openwrt@`82e2e4f4` + repo overlay | **6.18.41** | swconfig `rtl8367b.c` (RB family explicit) | PHYLINK `rtl819x-eth` + `rtl819x_hwnat.c` on `flow_offload` (measured 857–929 Mbit/s) | `tools/cvimg` w/ cr6b/cr6c/cs6c, `LZMA_TEXT_START=0x82000000` |
 | B (reference) | `/tmp/rebase-base` (tobyw121/Openwrt_RTL `MW5_Stable`) | 24.10-SNAPSHOT era | 6.6.114 | DSA `net/dsa/rtl8367{,5mb}` + rtl8_4 tags | DSA + tc | `scripts/rtl8197f-image.py`, `RTL8197F_IMAGE_SIGNATURE := cr6c`, in-tree `rtkload/` |
 
 A's SoC bindings match our 4.14 tree exactly (`"realtek,rtl8197f-soc"`,

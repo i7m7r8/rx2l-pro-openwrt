@@ -32,7 +32,9 @@ derived from the LAN MAC.
 * The `cr6c` container's checksum format, header fields and rootfs geometry —
   established by reproducing them byte-exactly on real images, not by reading
   documentation.
-* `start_addr 0x81000000` in our images — our loader's link address, not the
-  vendor's `0x80d00000`.
+* `start_addr 0x82000000` in our images — our loader's link address, not the
+  vendor's `0x80d00000`. The stock stage-1 takes the value from the header and
+  applies no bound check (`port/02-image-container/loader/LOADER.md` §6); the
+  32 MiB window is what the initramfs image needs.
 * Anything marked `TODO(port-facts)` in the DTS and `seed.config` is a known
   unknown, deliberately not guessed.

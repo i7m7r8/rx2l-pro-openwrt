@@ -77,12 +77,29 @@ endef
 #            NEVER `cr6b`: that is the D-Link DIR-842 R1 signature and our
 #            loader refuses it ("No sys signature").
 # -e       : header +0x04 = jump target = loader link address, written BE.
-#            0x81000000 is correct and safe [F §6]: the loader is header-driven,
-#            nothing in mtd1 forces the vendor's 0x80d00000 (that constant
-#            appears nowhere in mtd1 or in U-Boot proper). 0x81000000 also
-#            raises our decompressed-kernel budget from 13 MiB to 16 MiB.
-#            Constraint: it must stay an 0x8xxxxxxx KSEG0 address, because
-#            stage-1 forms the copy destination as `start_addr | 0x20000000`.
+#            0x82000000, i.e. a 32 MiB decompression window above LOADADDR.
+#            The loader is header-driven and nothing in mtd1 pins the vendor's
+#            0x80d00000 (that constant appears nowhere in mtd1 or in U-Boot
+#            proper), so the value is ours to choose and the constraint is only
+#            that it stays a plain KSEG0 address: stage-1 forms the copy
+#            destination as `start_addr | 0x20000000`, and 0x82000000 maps to
+#            physical 0x02000000, i.e. 32 MiB into the 128 MiB DRAM this board
+#            has (notes/firmware-audit.md §10).
+#            This is measured, not assumed: the stock stage-1's own code
+#            (port/02-image-container/loader/ghidra/stage1-jump-to-image.c,
+#            LOADER.md §6) reads +0x04, copies len-2 bytes to
+#            `start_addr | 0x20000000` and calls `start_addr`, with no compare
+#            against any address and neither 0x81000000 nor 0x80d00000 present
+#            as a constant anywhere in the 229,584-byte image.
+#            Why not 0x81000000 (a 16 MiB window): the *initramfs* kernel is
+#            18,201,116 bytes (0x115ba1c) -- vmlinux with the whole rootfs
+#            embedded -- so the gate below rejected it at 15.94 MiB and the
+#            install stage aborted. The initramfs is the one artifact that can
+#            be booted without writing flash, so it has to fit; and a factory
+#            kernel that grows past 16 MiB would have failed the same way, 95
+#            minutes into a run. 32 MiB costs nothing: the loader's own code,
+#            BSS and 8 KiB stack sit at the top of the window and the kernel
+#            decompresses upward from 0x80000000.
 # -b 0x40000 : header +0x08. Unused by the boot path [F §3], but written as the
 #            real flash offset anyway: it is what stock carries [c], it is what
 #            the vendor updater/AUTOBURN path reads, and it is the offset the
@@ -146,9 +163,11 @@ endef
 # ---------------------------------------------------------------------------
 # See the budget analysis in REPORT.md. The stage-1 loader copies the payload
 # to start_addr and jumps there; the loader decompresses the kernel downward
-# from LOADADDR=0x80000000 while it is still executing from 0x81000000, and the
-# compressed stream sits above it in the same payload. So the decompressed
-# kernel+DTB must stay under `CVIMG_LOADER_START_ADDR - LOADADDR` = 16 MiB.
+# from LOADADDR=0x80000000 while it is still executing from
+# CVIMG_LOADER_START_ADDR, and the compressed stream sits above it in the same
+# payload. So the decompressed kernel+DTB must stay under
+# `CVIMG_LOADER_START_ADDR - LOADADDR` -- 32 MiB at 0x82000000, minus the 64 KiB
+# reserve for the loader itself.
 # The in-tree loader has NO bound check of any kind (loader.c just calls
 # LzmaDecode into LOADADDR), so an oversized kernel is a silent, unbootable
 # image -- OpenWrt's own Build/check-size is deliberately non-fatal (it prints
@@ -266,7 +285,7 @@ define Device/tenda_rx2lpro
   # header +0x04 == the loader's link address (see §3/§4). One variable is the
   # single source of truth for both, so they cannot disagree -- which is the
   # exact way this image either boots or prints nothing at all.
-  CVIMG_LOADER_START_ADDR := 0x81000000
+  CVIMG_LOADER_START_ADDR := 0x82000000
   CVIMG_KERNEL_BURN_ADDR := 0x40000
   CVIMG_TENDA_KREF := 0x808d45c0
   RX2LPRO_KERNEL_BUDGET := 0x1000000

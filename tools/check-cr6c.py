@@ -154,7 +154,7 @@ def main():
                     help='input is a raw KernelFS partition dump')
     ap.add_argument('--allow-cr6b', action='store_true',
                     help='accept the DIR-842 cr6b signature when inspecting another board\'s dump; this loader cannot boot it')
-    ap.add_argument('--expect-start', default='0x81000000',
+    ap.add_argument('--expect-start', default='0x82000000',
                     help='start_addr the built image should declare')
     a = ap.parse_args()
 

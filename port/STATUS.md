@@ -36,7 +36,7 @@ else, because the image build under `target/linux install` runs through
 Ruled out for that stage while the run was in flight (local, on this host):
 the DTS (cpp+dtc 1.7.2 -> 4092-byte blob, warnings only, every `&label` it
 uses exists in `RTL8197F.dtsi`), `cvimg` with the exact recipe flags
-(`-e 0x81000000 -b 0x40000 -s cr6c` -> container that `tools/check-cr6c.py`
+(`-e 0x82000000 -b 0x40000 -s cr6c` -> container that `tools/check-cr6c.py`
 accepts), `tenda-wrap -c cr6c -k 0x808d45c0` (wrap -> webui gate exit 0), and
 the `container` / `budget` / `webui` gates on a hand-assembled
 kernel+squashfs container (all exit 0). So the cause is in the make wiring of
