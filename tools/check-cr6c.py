@@ -56,11 +56,19 @@ class Report:
         self.warns.append(label)
 
 
-def parse_container(data, off, rep, want_start=None):
+def parse_container(data, off, rep, want_start=None, allow_cr6b=False):
     """Validate the cvimg header + checksum + rootfs placement at data[off:]."""
     sig = data[off:off + 4]
-    if not rep.check(sig in (b'cr6c', b'cr6b', b'cs6c'), 'container signature',
-                     repr(sig)):
+    # Our stage-1 accepts `cr6c` and `cs6c` only; `cr6b` is the D-Link DIR-842
+    # signature and this loader answers it with "No sys signature at %X!" and
+    # drops to the command monitor. Accepting it here (as this check used to)
+    # would bless an image the router refuses to boot, which is the one thing a
+    # build gate must never do. Other boards' dumps can still be inspected with
+    # --allow-cr6b.
+    allowed = (b'cr6c', b'cs6c') + ((b'cr6b',) if allow_cr6b else ())
+    if not rep.check(sig in allowed, 'container signature',
+                     '%r%s' % (sig, ' (cr6b is not bootable by this loader)'
+                               if sig == b'cr6b' and not allow_cr6b else '')):
         return None
     start, burn, ln = struct.unpack('>III', data[off + 4:off + 16])
     print('       signature=%s start_addr=%#x burn_addr=%#x len=%#x payload=%#x' %
@@ -144,6 +152,8 @@ def main():
                     help='input carries the 64-byte Tenda plaintext header')
     ap.add_argument('--stock', action='store_true',
                     help='input is a raw KernelFS partition dump')
+    ap.add_argument('--allow-cr6b', action='store_true',
+                    help='accept the DIR-842 cr6b signature when inspecting another board\'s dump; this loader cannot boot it')
     ap.add_argument('--expect-start', default='0x81000000',
                     help='start_addr the built image should declare')
     a = ap.parse_args()
@@ -183,7 +193,8 @@ def main():
         # a KernelFS dump: the container is at the very start of mtd3
         rep.check(len(data) == 0xF80000, 'KernelFS partition size', hex(len(data)))
 
-    parse_container(data, off, rep, want_start=int(a.expect_start, 0))
+    parse_container(data, off, rep, want_start=int(a.expect_start, 0),
+                    allow_cr6b=a.allow_cr6b)
 
     tail = data[-64:]
     rep.check(b'\x00\xc0\xff\xee' not in tail, 'no D-Link keyed-MD5 trailer',
