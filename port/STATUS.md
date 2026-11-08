@@ -1,49 +1,57 @@
-# Status snapshot — 2026-11-08 (round 37 of 40)
+# Status snapshot — 2026-11-08 (round 38 of 40)
 
 Not a facts file (that is `FACTS.md`) and not a plan (that is each track's
 `REPORT.md`). This is the short answer to "where is this port right now".
 
-## In flight
+## Where the build actually is
 
-One GitHub Actions run: **`40f5e9d`** (`42446968192`), started 04:28:41Z.
-It carries the first fix aimed at an error the compiler actually printed:
+**The kernel compiles.** Run `42447250472` (`aba80cb`) reached the compiler for
+the first time in this port's history and came out of it clean, then reported
+all eleven asserted symbols present in the built `.config`:
 
-* `mtdsplit_cvimg.c:49` said `const static` -> `-Werror=old-style-declaration`
-  -> `cc1: all warnings being treated as errors`. Now `static const`.
-
-Both runs before it (`42429513794` on rebase-latest at `829540e`, `42433172719`
-on test/pci5g at `1932146`) died on that same line and nothing else: it was the
-only `error:` in either 5000-line log, 95 minutes in. So the two previous
-"failures" have one root cause, and it is one word.
-
-Why `-Werror` is real and stays: OpenWrt implies it from the toolchain choice —
-`toolchain/gcc/Config.version:19` has `imply KERNEL_WERROR` under
-`GCC_USE_DEFAULT_VERSION` (GCC 14 is the default), and build.sh's kernel config
-step maps top-level `CONFIG_KERNEL_*` into the kernel namespace, which is what
-turns it into `CONFIG_WERROR=y` *after* `generic/config-6.18:8120`'s
-`# CONFIG_WERROR is not set` — last write wins. The platform overlay is
-hardware-tested at this same base rev with the same implied flag, so the
-warning was ours to fix, not the build's to relax.
-
-Why it appeared only now: this file had never been compiled. Every earlier run
-died before cc1 ran at all (the swconfig Kconfig cycle; then the missing
-realtek Kconfig symbol), so `drivers/mtd` was the first place the splitter
-reached the compiler.
-
-```sh
-gh run list --limit 3                       # is 40f5e9d done, and how
-gh run view <id> --log | grep -nE 'BUILD FAILED|MISSING CONFIG_|GATE FAIL|error:'
+```
+ok CONFIG_SWCONFIG=y                     ok CONFIG_RTL8192FE_RX23302=y
+ok CONFIG_RTL8366_SMI=y                  ok CONFIG_WIRELESS_EXT=y
+ok CONFIG_RTL8367B_PHY=y                 ok CONFIG_WEXT_PRIV=y
+ok CONFIG_MTD_SPLIT_CVIMG_FW=y           ok CONFIG_SOC_RTL8197F=y
+ok CONFIG_MTD_SPLIT_SQUASHFS_ROOT=y      ok CONFIG_HAVE_PCI=y
+ok CONFIG_NET_RTL819X=y                  OFF CONFIG_PCI (branch test/pci5g only)
 ```
 
-Read the log for one of three outcomes: `BUILD FAILED` (the script prints the
-real error plus a kernel `.config` survival list), the symbol assertion (a line
-naming any of nine missing symbols), or a green build. Note the failure order
-this run reaches first: `drivers/mtd` is past, so the next compiler stops are
-`drivers/net/phy` (rtl8367b + our `rtl8367.h`, whose field use was re-checked
-against the driver and matches) and then `drivers/net/wireless/rtl8192fe` --
-the vendored 4.14 HAL, which no earlier run has compiled. If it is green, the
-artifacts are under `bin/targets/rtl819x/rtl8197f/` and the next action is the
-RAM boot.
+That includes the vendored 4.14 wifi HAL (`RTL8192FE_RX23302`) and the switch
+driver. The three earlier red runs were, in order: a swconfig Kconfig cycle
+(ours), `const static` under `-Werror=old-style-declaration` (ours), and a
+symbol assertion naming `CONFIG_WLAN_HAL_8197F` — a symbol this tree never
+defines, because the overlay sources `Kconfig.rx23302` (one symbol) and not the
+vendor's 1451-line Kconfig.
+
+**The image stage is the current failure**, and it hides its own error:
+`target/install` printed `ERROR: target/linux failed to build.` and nothing
+else, because the image build under `target/linux install` runs through
+`NO_TRACE_MAKE`. That is why `be97362` makes the failure path re-run *both*
+`target/linux/compile` and `target/linux/install` with `-j1 V=s`, grep for
+`GATE FAIL`/`BUILD PRODUCED` as well as `error:`, and list
+`bin/targets/*/*` and any `CONFIG_BUILD_LOG` files.
+
+Ruled out for that stage while the run was in flight (local, on this host):
+the DTS (cpp+dtc 1.7.2 -> 4092-byte blob, warnings only, every `&label` it
+uses exists in `RTL8197F.dtsi`), `cvimg` with the exact recipe flags
+(`-e 0x81000000 -b 0x40000 -s cr6c` -> container that `tools/check-cr6c.py`
+accepts), `tenda-wrap -c cr6c -k 0x808d45c0` (wrap -> webui gate exit 0), and
+the `container` / `budget` / `webui` gates on a hand-assembled
+kernel+squashfs container (all exit 0). So the cause is in the make wiring of
+the image recipe, not in the tools or the gates.
+
+In flight now: **`be97362`** (`42453851939`), started 06:13:27Z.
+
+```sh
+gh run list --limit 3
+gh run view <id> --log | grep -nE 'BUILD FAILED|MISSING CONFIG_|GATE FAIL|error:|reference'
+```
+
+If it is green, the artifacts are under `bin/targets/rtl819x/rtl8197f/` and the
+next action is the RAM boot. If it is red again, the re-run section now names
+the failing image step.
 
 ## Verified against evidence (not against hope)
 
