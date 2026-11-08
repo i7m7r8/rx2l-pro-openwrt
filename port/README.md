@@ -14,6 +14,10 @@ the orchestrator integrates it and CI is green.
 | `05-wifi-2g/` | on-SoC WMAC (rtl8192cd HAL) on 6.18 + RF calibration | `package/`, uci-defaults |
 | `06-wifi-5g-8832br/` | Wi-Fi 6 client: route decision and first attempt | research + package skeleton |
 | `07-usersland/` | base-files, sysupgrade, modern LuCI/firewall4 package set | `files/`, `seed.config` |
+| `08-veto-paths/` | the stock upgrade flow's veto/rollback paths, and the symlink bypass that gets an unsigned image flashed | `notes/`, `qemu/` |
+| `09-integration/` | landing order, conflicts and CI across tracks | orchestration |
+| `10-kernel-boot/` | kernel boot path notes (stub; the boot contract itself lives in `FACTS.md` §3) | notes |
+| `11-pcie-5ghz/` | PCIe host bring-up and the RTL8832BR plan | `files/`, `compat/` |
 
 Rules of the road:
 
