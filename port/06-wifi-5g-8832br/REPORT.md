@@ -200,3 +200,55 @@ reverse -- which is why track 06 can be a *port*, not an RE exercise.
 The `ther.conf` split is worth noting for later: the two radios have different
 cut-offs (56 vs 70 °C), which is the kind of per-radio constant a shared thermal
 handler would get wrong.
+
+## Enabling the bus (this branch) and what it does *not* do
+
+The card has never been seen because `CONFIG_PCI` was off, and the reason was our
+own config fragment saying `# CONFIG_PCI is not set`. Three pieces:
+
+| piece | state before this branch |
+|---|---|
+| platform selects `HAVE_PCI` | overlay `0006-realtek-have-pci.patch` already did it — the bus was selectable all along |
+| SoC Kconfig selects it | said `select HW_HAS_PCI`, a symbol that existed only up to v4.19 → no-op with a warning; rewritten by `compat/6.18/920-realtek-have-pci-6.18.patch` |
+| `CONFIG_PCI_DRIVERS_LEGACY=y` | already set; `pci-realtek.c` is written against `struct pci_controller` |
+| `CONFIG_PCI=y` | **this branch** |
+
+With those, `arch/mips/pci/Makefile`'s `obj-$(CONFIG_REALTEK) += pci-realtek.o`
+builds, the DTS `pcie0` node is already `status = "okay"`, and the bus should come
+up at boot.
+
+**What this does not do:** bind a driver to the card. `10ec:b832` has no driver in
+v6.18 — rtw89's ID table covers b851/b852/b85b/c852/8922, not b832 (verified by
+reading the table out of the stock kernel: b814 at `0xb77860`, **b832 at
+`0xb7787c`**, 0192 next). So after this branch the correct expectation is:
+
+```
+pci 0000:00:00.0: [10ec:b832] ...          <- enumeration, from this branch
+    (no driver bound; lspci would show "no kernel driver")
+```
+
+which is still worth having: it turns "5 GHz is missing" into "the card is
+present and unidentified", and it is the prerequisite for everything below.
+
+## The driver port that follows
+
+The vendor stack is `rtk_wifi6` (G6), built into the stock 4.4 kernel with its
+firmware embedded — no `rtw*.bin` on the rootfs. Candidate routes:
+
+1. **G6 SKD port** — TP-Link `GPL_ax1500v3.tar.gz` (`PKG_HASH
+   6d133598…f2a`), the source `tobyyw121/Openwrt_RTL` used; that repo is gone
+   (404) but its 6.6 port is preserved under
+   `skd-attempt/from-6.6-port/` (4 patches, 2.5 Kl oc). Moving 6.6 → 6.18 is the
+   same work that was done for `rtl8192fe` in this port: cfg80211 op removals
+   (`.mgmt_frame_register`, `.set_wds_peer`, `ch_switch_notify` link_id),
+   `dev_addr` constness, timer compat. That is the realistic route.
+2. **rtw89 upstream with a b832 ID** — not viable: rtw89 has no b832 support and
+   the chip is not a rebadged 8852B in that table.
+3. **Extract the vendor driver from the stock kernel** — no: it is a 4.4 module
+   built into vmlinux, not separable.
+
+The RF side is already known and need not be reverse-engineered: 38 RFE50 text
+tables under `/etc/wlan/rtl8832bre/` (16 of them hashed in
+`skd-attempt/files/rfe50-manifest.sha256`, all verified against this unit), read
+at runtime via `flash_set para_path=/etc/wlan/`, with `ther.conf` giving the two
+radios different thermal cut-offs (56 vs 70 °C).
