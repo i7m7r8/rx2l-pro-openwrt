@@ -436,6 +436,34 @@ fi
 # additive BE-u16 checksum over len bytes from +0x10 summing to 0 (FACTS.md §3).
 # A container that misses it bricks to the loader's TFTP prompt, so an image is
 # not "built" until it passes.
+# ---- verify the kernel actually got the drivers this board needs ---------------
+# A successful build says nothing about whether the switch, the cr6c splitter or
+# the WLAN HAL are IN it: a CONFIG_ whose Kconfig is missing (or whose
+# dependencies are unmet) is dropped by kconfig without a word, and then the
+# image builds fine and boots without the hardware. The switch driver spent days
+# in that state. So the required symbols are asserted on the SUCCESS path too,
+# not only reported on failure.
+KCFG=$(ls build_dir/target-*/linux-*/linux-*/.config 2>/dev/null | head -1)
+if [ -z "$KCFG" ]; then
+	echo "!!! no kernel .config found -- cannot prove the drivers are in the image" >&2
+	exit 1
+fi
+echo
+echo ">>> asserting the kernel .config carries this board's drivers ($KCFG)"
+missing_syms=0
+for sym in CONFIG_SWCONFIG CONFIG_RTL8366_SMI CONFIG_RTL8367B_PHY \
+	   CONFIG_MTD_SPLIT_CVIMG_FW CONFIG_MTD_SPLIT_SQUASHFS_ROOT \
+	   CONFIG_NET_RTL819X CONFIG_WLAN_HAL_8197F CONFIG_RTL8192FE_RX23302 \
+	   CONFIG_SOC_RTL8197F; do
+	if grep -q "^$sym=y" "$KCFG"; then
+		echo "    ok      $sym=y"
+	else
+		echo "    MISSING $sym -- this image would boot without that driver" >&2
+		missing_syms=$((missing_syms + 1))
+	fi
+done
+[ "$missing_syms" -eq 0 ] || { echo "!!! $missing_syms required symbol(s) absent from the built kernel" >&2; exit 1; }
+
 BIN="${BIN:-bin/targets/rtl819x/rtl8197f}"
 echo
 echo ">>> verifying every produced container against the vendor spec"
