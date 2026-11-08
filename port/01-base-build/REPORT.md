@@ -315,3 +315,22 @@ three `cfg80211_ops` ones already fixed in `compat/6.18/`. What a scan like this
 **cannot** catch is a changed *number or type* of arguments on a function that
 still exists — `cfg80211_ch_switch_notify(dev, chandef)` was exactly that, and it
 took a header read rather than a symbol search to find.
+
+## The pins are the overlay's tested set, verified against its own versions.sh
+
+`build.sh` claimed `BASE_REV` is "the commit rx23302 v0.2.1 was built and
+hardware-tested against (its versions.sh:5-12)". Checked against the overlay's
+`versions.sh`:
+
+| what | overlay `versions.sh` | `build.sh` | |
+|---|---|---|---|
+| OpenWrt | `82e2e4f492d58b5b6afaf5b55d8286c58da9c224` | same | ✔ |
+| packages feed | `712ee13a837449fd91b5279048303d3a790d691b` | same | ✔ |
+| luci feed | `4c0a4eda5ea17f9e81fc860366d7d04ce3c21b8e` | same | ✔ |
+
+So the overlay's seven `patches-6.18` were written for *this* tree, and the feed
+ABI we compile against is the one that was tested. That is what makes "the patch
+applies" a meaningful statement rather than luck: a different base commit or a
+moved feed tip would invalidate both at once, and the pins are what prevent it.
+
+Worth keeping in view when bumping: all three move together, or none does.
