@@ -252,3 +252,28 @@ tables under `/etc/wlan/rtl8832bre/` (16 of them hashed in
 `skd-attempt/files/rfe50-manifest.sha256`, all verified against this unit), read
 at runtime via `flash_set para_path=/etc/wlan/`, with `ther.conf` giving the two
 radios different thermal cut-offs (56 vs 70 °C).
+
+### How much of the 6.6 → 6.18 delta is already known
+
+The preserved 6.6 port (`skd-attempt/from-6.6-port/patches/100-…wr1500.patch`,
+2,563 lines) was checked for the API points this port has already had to fix
+once, in `rtl8192fe`:
+
+| change | in the 6.6 port? |
+|---|---|
+| `cfg80211_ch_switch_notify(…, link_id)` | **yes**, 3 references — the 6.6 tree already carries the 3-argument form |
+| `dev_addr` constness / `eth_hw_addr_set()` | **yes**, 3 each |
+| `.mgmt_frame_register` removal | **no** — 0 references |
+| `.set_wds_peer` removal | **no** — 0 references |
+
+So the port is not starting from zero: the two changes 6.6 already needed are
+handled. The 6.18 work adds exactly the class we fixed in `compat/6.18/
+910-rtl8192fe-cfg80211-6.18.patch` — drop `.mgmt_frame_register` and
+`.set_wds_peer` from the G6 ops (they were removed in 6.9) — plus whatever
+argument-count drift the compiler reports, which is the part no static check can
+promise.
+
+That makes the estimate concrete rather than hand-wavy: the remaining 5 GHz work
+is dominated by making the G6 driver *build* against 6.18, not by RF or by
+reverse engineering — the calibration is 38 text tables, 16 of them already
+hashed and verified.
