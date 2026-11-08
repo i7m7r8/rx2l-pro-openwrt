@@ -404,10 +404,29 @@ if ! make -j"$JOBS" 2>&1 | tee -a "$BUILD_LOG"; then
 	# there on every build, green or not), so the run that failed on
 	# `const static` below 80 lines of plan noise had to be diagnosed from the
 	# V=s re-run instead. Grep first, tail second.
-	echo "--- every error:/undefined-reference line in the whole log ---" >&2
-	grep -nE 'error:|undefined reference to' "$BUILD_LOG" | tail -60 >&2 || true
-	echo "--- re-running target/linux with V=s so the error is explicit ---" >&2
-	make -j1 V=s target/linux/compile 2>&1 | tail -120 >&2 || true
+	echo "--- every error:/undefined-reference/gate line in the whole log ---" >&2
+	grep -nE 'error:|undefined reference to|GATE FAIL|GATE WARN|BUILD PRODUCED|no factory-cr6c' \
+		"$BUILD_LOG" | tail -60 >&2 || true
+	# Nothing in the log above is guaranteed to name the failure: OpenWrt runs
+	# each subtarget through scripts/time.pl with the kernel's own output going
+	# to a per-subdir log, and `target/linux install` hides its recipe under
+	# NO_TRACE_MAKE. The run that got a clean kernel and then failed at
+	# target/install (42447250472) printed one line -- "ERROR: target/linux
+	# failed to build." -- and no cause at all. So re-run BOTH stages that can
+	# fail here, serially and verbose, and show their tails: compile (fast when
+	# objects exist) and install (the step that builds the image, where the
+	# cvimg/tenda-wrap/gate failures live). V=s is what makes the target's own
+	# sub-make echo its recipes.
+	for stage in compile install; do
+		echo "--- re-running target/linux/$stage with -j1 V=s ---" >&2
+		make -j1 V=s "target/linux/$stage" 2>&1 | tail -160 >&2 || true
+	done
+	if [ -d logs ]; then
+		echo "--- OpenWrt build logs (CONFIG_BUILD_LOG) ---" >&2
+		find logs -name '*.txt' -newermt '-3 hours' 2>/dev/null | head -20 >&2 || true
+	fi
+	echo "--- what the image step produced (if anything) ---" >&2
+	ls -l bin/targets/*/*/ 2>/dev/null | tail -30 >&2 || true
 
 	# A whole class of failure in this port is silent: set a CONFIG_ in the
 	# target config, have no Kconfig define it (or have its dependencies
