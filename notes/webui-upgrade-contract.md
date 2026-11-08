@@ -276,3 +276,24 @@ top of this file.) Consequences for a clean install:
   Our port reads them; it never writes them.
 * A sysupgrade later replaces squashfs+overlay normally, and `firstboot` remains
   the explicit reset path.
+
+## Two implementations of this contract, cross-checked
+
+`tools/check-webui-bin.py` (manual inspector, referenced from this note and the
+README) and `scripts/rx2lpro-image-gates.py webui` (the build gate, wired into the
+`tenda-plaintext.bin` pipeline) both encode the rules above. Two encodings of one
+contract can drift, so they were compared on three inputs:
+
+| input | `check-webui-bin.py` | `gates.py webui` |
+|---|---|---|
+| the vendor's own decrypted OTA | `all rules passed` | exit 0, every check OK |
+| one bit flipped at `+0x27` (product id) | `1 problem(s)` | exit 1, fails on `check_fw_crc` |
+| a 16 MiB payload wrapped (header overflows mtd3) | `FAIL image is 0xf80040 bytes; KernelFS (mtd3) is 0xf80000` | `GATE FAIL [mtd-size]: total image 0xf80040 exceeds the KernelFS window` |
+
+They agree on all three, including the reason: the third is `check_mtd_size` →
+-3 on both sides, not two different tests happening to fail.
+
+Division of labour from here: the build gate runs on every `tenda-plaintext.bin`
+and fails the build; `check-webui-bin.py` stays the tool to reach for when
+inspecting an arbitrary file by hand (`--reference` lets it compare the opaque
+header words against a known-good image, which the gate does not attempt).
