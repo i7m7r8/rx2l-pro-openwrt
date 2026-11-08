@@ -579,10 +579,17 @@
 /*
  * PCIe root complex for the 5 GHz RTL8832BR.
  *
- * Enabled and measured: /proc/interrupts on this unit shows the Wi-Fi 6
- * driver on MIPS IRQ 5, and this base's RTL8197F.dtsi wires pcie0 to
- * interrupts = <5> (BSP_PCIE_IRQ base + 5). The 2.4 GHz radio sits on IRQ 6
- * with the WMAC and is NOT behind this bus.
+ * Enabled and measured. The unit's own /proc/interrupts (captured in the stock
+ * syslog dump) reads
+ *
+ *     4:       0  MIPS  4  eth0
+ *     5:  968696  MIPS  5  rtk_wifi6     <- the 5 GHz card, behind this bus
+ *     6: 4711710  MIPS  6  wlan1         <- the 2.4 GHz WMAC, not behind it
+ *     7:  661731  MIPS  7  timer
+ *
+ * and this base's RTL8197F.dtsi wires pcie0 to interrupts = <5> (BSP_PCIE_IRQ
+ * base + 5). So IRQ 5 is the card and IRQ 6 is the on-SoC radio, which is why
+ * enabling CONFIG_PCI cannot disturb the 2.4 GHz path.
  *
  * The reference clock is the 40 MHz fixed-clock already in RTL8197F.dtsi
  * (read from 0xB8000008 bit 24 on that board; re-confirm for ours before
@@ -590,9 +597,14 @@
  *
  * RTL8832BR is NOT supported by mainline rtw89 (which knows 8851B/8852A/B/BT/C
  * and 8922A/D), so no in-tree driver claims this card on either base; the
- * 5 GHz path is track 06's problem. The child node is left commented out
- * because we never saw this card's PCI ID in any dump -- do not bake a guess
- * into the tree. One read-only command settles it (REPORT.md item 3).
+ * 5 GHz path is track 06's problem.
+ *
+ * The card's ID is known now: 10ec:b832, read out of the stock kernel's own
+ * pci_device_id table at 0xb7787c (b814 sits at 0xb77860 and 0192 at
+ * 0xb77890, so the table is unambiguous). No child node is needed for it
+ * anyway -- the bus enumerates the function from config space, and the shape
+ * below is kept only to document what a node would look like if a driver ever
+ * needed properties. Baking the ID in would add nothing and could go stale.
  */
 &pcie0 {
 	status = "okay";
