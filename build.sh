@@ -146,24 +146,47 @@ fi
 echo ">>> overlaying device support from $SELF_DIR/files/"
 cp -a "$SELF_DIR"/files/. .
 
-# ---- 3a-bis. compat patches for the 6.18 kernel -------------------------------
-# These edit the overlay's driver sources, so they cannot live in
+# ---- 3a-bis. compat patches ---------------------------------------------------
+# These edit the overlay's sources, so they cannot live in
 # target/linux/rtl819x/patches-6.18/ (those are applied to the base kernel tree
 # BEFORE files-6.18/ is copied into it, so a patch there cannot see this file).
 # Applied here, right after files/ has landed, and failing the build if they do
-# not apply -- a silent miss would only surface as a kernel compile error 40
-# minutes later.
-COMPAT_DIR="$SELF_DIR/compat/6.18"   # NOT under files/: that tree is copied into the OpenWrt root
-if [ -d "$COMPAT_DIR" ]; then
-	for cpat in "$COMPAT_DIR"/*.patch; do
-		[ -f "$cpat" ] || continue
-		echo ">>> compat: $(basename "$cpat")"
-		if ! patch -p1 --forward --dry-run <"$cpat" >/dev/null 2>&1; then
-			echo "!!! compat patch does not apply: $cpat" >&2
-			echo "    the overlay's sources changed; re-derive this patch before building" >&2
-			exit 1
-		fi
-		patch -p1 --forward <"$cpat" >/dev/null
+# not apply -- a silent miss would only surface as a compile error 40 minutes
+# later.
+#
+# Every compat/<group>/ directory is applied, in name order, because the patches
+# target different trees and one group is not "the" kernel:
+#   compat/6.18/  the 6.18 driver sources
+#   compat/host/  host-tool plumbing (tools/Makefile), which has no kernel
+#                 version and would otherwise never be reached
+# A hardcoded compat/6.18 path is what let `tools-y += tenda-wrap` go missing:
+# files/tools/tenda-wrap/ existed and compiled, nothing listed it, so the build
+# descended into 100+ other tools and then the image recipe failed at
+# `staging_dir/host/bin/tenda-wrap: No such file or directory` (run 42464008953).
+# NOT under files/: that tree is copied into the OpenWrt root.
+COMPAT_ROOT="$SELF_DIR/compat"
+if [ -d "$COMPAT_ROOT" ]; then
+	for compat_dir in "$COMPAT_ROOT"/*/; do
+		[ -d "$compat_dir" ] || continue
+		for cpat in "$compat_dir"*.patch; do
+			[ -f "$cpat" ] || continue
+			echo ">>> compat: $(basename "$compat_dir")/$(basename "$cpat")"
+			# Idempotent, because a warm rerun keeps the tree: the overlay is
+			# only re-applied when the stamp changes, so a file this loop
+			# patched last time is still patched. Plain --forward would then
+			# report "Reversed (or previously applied) patch detected" and
+			# exit 1, turning every second local build into a false failure.
+			# Reverse-applying cleanly is the proof that it is already in.
+			if patch -p1 --forward --dry-run <"$cpat" >/dev/null 2>&1; then
+				patch -p1 --forward <"$cpat" >/dev/null
+			elif patch -p1 --reverse --dry-run <"$cpat" >/dev/null 2>&1; then
+				echo "    already applied - skipping"
+			else
+				echo "!!! compat patch does not apply: $cpat" >&2
+				echo "    the overlay's sources changed; re-derive this patch before building" >&2
+				exit 1
+			fi
+		done
 	done
 fi
 

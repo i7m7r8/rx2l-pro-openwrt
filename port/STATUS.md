@@ -25,13 +25,36 @@ symbol assertion naming `CONFIG_WLAN_HAL_8197F` — a symbol this tree never
 defines, because the overlay sources `Kconfig.rx23302` (one symbol) and not the
 vendor's 1451-line Kconfig.
 
-**The image stage is the current failure**, and it hides its own error:
+**The image stage was the failure**, and it hid its own error:
 `target/install` printed `ERROR: target/linux failed to build.` and nothing
 else, because the image build under `target/linux install` runs through
 `NO_TRACE_MAKE`. That is why `be97362` makes the failure path re-run *both*
 `target/linux/compile` and `target/linux/install` with `-j1 V=s`, grep for
 `GATE FAIL`/`BUILD PRODUCED` as well as `error:`, and list
 `bin/targets/*/*` and any `CONFIG_BUILD_LOG` files.
+
+**CAUSE FOUND (run 42464008953).** `tenda-wrap: No such file or directory` was
+the whole story: `files/tools/tenda-wrap/` is a HostBuild that nothing listed in
+`tools/Makefile`'s `tools-y`, so OpenWrt never descended into it, never compiled
+it, and never installed it into `staging_dir/host/bin/`. `cvimg` worked only
+because the *platform overlay's* `openwrt-upstream.patch` adds
+`tools-y += cvimg`; our tool had no equivalent. The image recipe then failed at
+`Build/tenda-wrap`, whose `|| rm -f $@.new` removed the new file and left the
+raw `cr6c` container, which is why the next line was the *symptom*
+`GATE FAIL [tenda_rx2lpro/fw-type]: unknow fw type ... 0x63723663` ('cr6c'
+read as big-endian).
+
+Fixed by `compat/host/0001-tools-Makefile-register-tenda-wrap.patch`, plus two
+changes so this class of failure cannot repeat silently:
+
+* `build.sh` applies **every** `compat/<group>/` directory now, not just the
+  hardcoded `compat/6.18` — a host-tool patch has no kernel version and would
+  otherwise never be reached. The loop is idempotent too: a warm rerun keeps the
+  already-patched tree, so plain `--forward` used to abort with "previously
+  applied".
+* `selftest` gained **every host tool we ship is actually registered**, which
+  fails in milliseconds when a `files/tools/<name>/` is not named by a
+  `tools-y += <name>` line in some compat patch.
 
 Ruled out for that stage while the run was in flight (local, on this host):
 the DTS (cpp+dtc 1.7.2 -> 4092-byte blob, warnings only, every `&label` it
@@ -42,16 +65,8 @@ the `container` / `budget` / `webui` gates on a hand-assembled
 kernel+squashfs container (all exit 0). So the cause is in the make wiring of
 the image recipe, not in the tools or the gates.
 
-In flight now: **`be97362`** (`42453851939`), started 06:13:27Z.
-
-```sh
-gh run list --limit 3
-gh run view <id> --log | grep -nE 'BUILD FAILED|MISSING CONFIG_|GATE FAIL|error:|reference'
-```
-
-If it is green, the artifacts are under `bin/targets/rtl819x/rtl8197f/` and the
-next action is the RAM boot. If it is red again, the re-run section now names
-the failing image step.
+Next action: re-run CI and confirm the build reaches the image stage with
+`tenda-wrap` installed. Artifacts land under `bin/targets/rtl819x/rtl8197f/`.
 
 ## Verified against evidence (not against hope)
 

@@ -47,6 +47,35 @@ jobs:
           gcc -Wall -Wextra -Werror -O2 -o /tmp/tenda-wrap \
             files/tools/tenda-wrap/src/tenda-wrap.c
 
+      # A host tool can compile perfectly and still never be BUILT: OpenWrt
+      # descends into tools/<name> only when `tools-y` lists it, so a HostBuild
+      # under files/tools/ is dead weight until something appends it to that
+      # list. That is exactly what run 42464008953 hit -- cvimg (listed by the
+      # platform overlay's patch) worked, tenda-wrap (listed by nothing) did
+      # not, and the image recipe died 2.5 hours in with
+      #     bash: .../staging_dir/host/bin/tenda-wrap: No such file or directory
+      # This check costs milliseconds: every files/tools/<name>/ must be named
+      # by a tools-y line our own compat patches add.
+      - name: every host tool we ship is actually registered
+        run: |
+          set +e
+          rc=0
+          for d in files/tools/*/; do
+            [ -f "$d/Makefile" ] || continue
+            t=$(basename "$d")
+            # the registration may come from any compat group's patch
+            if ! grep -rqE "^\+tools-y \+= ${t}\$" compat/ 2>/dev/null; then
+              echo "!!! files/tools/$t/ is a HostBuild that tools-y never lists." >&2
+              echo "    OpenWrt will never compile or install it, and the image" >&2
+              echo "    recipe that calls it fails at the last step of the build." >&2
+              echo "    Add it with a patch under compat/host/ that appends" >&2
+              echo "    'tools-y += $t' to tools/Makefile." >&2
+              rc=1
+            fi
+          done
+          [ $rc -eq 0 ] && echo "every files/tools/ HostBuild is registered in tools-y"
+          exit $rc
+
       - name: Round-trip a synthetic container
         run: python3 tests/test_container.py
 
