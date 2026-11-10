@@ -349,6 +349,14 @@ make defconfig
 # they are checked HERE, before hours of compiling. Names are as they resolve at
 # BASE_REV + overlay; if a track renames the device profile, update this list
 # with it (port/README.md: track 01 owns the seed).
+#
+# CONFIG_TARGET_SQUASHFS_BLOCK_SIZE is in this list for a subtler reason than
+# the rest: it always RESOLVES (config/Config-images.in gives it a default), so
+# defconfig never drops it and never complains. What it resolves to is the
+# problem. The overlay's subtarget sets FEATURES+=small_flash, which flips the
+# default to 1024 KiB; the build then produces a perfectly valid squashfs whose
+# block size tools/check-cr6c.py refuses at the end of a 2.5-hour run. Pinning
+# the exact value here turns that into a 4-second failure with a clear message.
 rc=0
 # When a symbol goes missing, say WHY. kconfig drops a package without a word,
 # and the reason is always in its own DEPENDS line or in the resolved state of
@@ -382,11 +390,23 @@ for sym in \
 	"CONFIG_PACKAGE_luci=y" \
 	"CONFIG_PACKAGE_uhttpd=y" \
 	"CONFIG_PACKAGE_firewall4=y" \
-	"CONFIG_PACKAGE_wifi-scripts=y"
+	"CONFIG_PACKAGE_wifi-scripts=y" \
+	"CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=128"
 do
 	grep -qx "$sym" .config || {
 		echo "!!! defconfig did not keep $sym" >&2
-		why_dropped "$sym"
+		case "$sym" in
+		CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=*)
+			echo "    this one is an int with a default, so it did not get" >&2
+			echo "    dropped -- it resolved to something else. Current value:" >&2
+			grep -E '^CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=' .config >&2 \
+				|| echo "    (absent)" >&2
+			echo "    small_flash (OVL rtl8197f/target.mk:9) defaults it to 1024," >&2
+			echo "    and tools/check-cr6c.py:145 rejects anything but" >&2
+			echo "    65536/131072/262144. Fix the seed, not the checker." >&2
+			;;
+		*) why_dropped "$sym" ;;
+		esac
 		rc=1
 	}
 done

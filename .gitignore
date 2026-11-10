@@ -16,6 +16,13 @@
 
 .DS_Store
 *.o
+# Python bytecode is regenerated on every run and is interpreter-version
+# specific: a committed .pyc is a stale copy of a file CI already recompiles,
+# and it makes `git status` dirty after any local `python3 -m py_compile`.
+# One was tracked from the initial commit (tests/__pycache__/...cpython-313.pyc);
+# removed here so it cannot come back.
+__pycache__/
+*.pyc
 # NOT '*.d': that pattern also matches DIRECTORIES ending in .d, so it silently
 # swallowed etc/board.d/, etc/init.d/ and etc/sysctl.d/ -- every board.d script
 # in this tree went uncommitted for the whole 4.14 and 6.18 line. Nothing builds

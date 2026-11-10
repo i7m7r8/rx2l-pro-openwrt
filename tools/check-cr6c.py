@@ -5,9 +5,14 @@ Run against anything this repo produces before it goes near a router. Every
 number below was established from the device's own mtd3 dump and two
 decrypted vendor images; see notes/cr6c-container.md.
 
-    python3 tools/check-cr6c.py openwrt/bin/targets/realtek/rtl8197f/*factory-cr6c.bin
-    python3 tools/check-cr6c.py --tenda openwrt/bin/targets/realtek/rtl8197f/*tenda-plaintext.bin
+    python3 tools/check-cr6c.py openwrt/bin/targets/rtl819x/rtl8197f/*factory-cr6c.bin
+    python3 tools/check-cr6c.py --tenda openwrt/bin/targets/rtl819x/rtl8197f/*tenda-plaintext.bin
     python3 tools/check-cr6c.py --stock /path/to/mtd3_KernelFS.bin
+
+Not bin/targets/realtek/: that is a DIFFERENT target on master (big-endian
+RTL838x/839x/930x switch SoCs). This board is the little-endian rtl819x target
+that the platform overlay defines, and build.sh:544 looks for the images in
+bin/targets/rtl819x/rtl8197f.
 
 Exit 0 = every check passed. This tool never writes anything.
 """
@@ -133,7 +138,20 @@ def parse_container(data, off, rep, want_start=None, allow_cr6b=False):
             '<IIIIH', data[root_off + 4:root_off + 22])
         print('       squashfs: inodes=%d block_size=%d fragments=%d total_bytes=%d' %
               (inodes, block_size, frags, total))
-        rep.check(block_size in (65536, 131072, 262144), 'squashfs block size sane')
+        # 65536/131072/262144 = 64/128/256 KiB. 1 MiB (1048576) is what this
+        # build produced while CONFIG_TARGET_SQUASHFS_BLOCK_SIZE was left at the
+        # small_flash default: the overlay subtarget sets FEATURES+=small_flash
+        # (rtl8197f/target.mk:9) and BASE config/Config-images.in defaults the
+        # symbol to 1024 when SMALL_FLASH is on, which include/image.mk:88 passes
+        # to mksquashfs as `-b 1024k`. The value is legal squashfs -- the image
+        # is not corrupt, it is just outside the geometry this board was
+        # measured in (the vendor's own superblock says 131072, see
+        # notes/firmware-audit.md §7). Fix seed.config, do not widen this tuple.
+        rep.check(block_size in (65536, 131072, 262144), 'squashfs block size sane',
+                  '' if block_size in (65536, 131072, 262144) else
+                  '%d is not one of 65536/131072/262144 (64/128/256 KiB); set '
+                  'CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=128 in seed.config -- the '
+                  'small_flash default is 1024' % block_size)
         remaining = len(data) - root_off
         rep.check(total <= remaining + ERASE,
                   'squashfs total_bytes fits the space left in the image',

@@ -64,6 +64,14 @@ CONFIG_TARGET_rtl819x_rtl8197f_DEVICE_tenda_rx2lpro=y
 # RAM-boot is the only safe iteration loop on a single-bank box.
 CONFIG_TARGET_ROOTFS_INITRAMFS=y
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
+# Block size in KiB. The overlay's subtarget sets FEATURES+=small_flash
+# (OVL target/linux/rtl819x/rtl8197f/target.mk:9), and BASE
+# config/Config-images.in defaults TARGET_SQUASHFS_BLOCK_SIZE to 1024 when
+# SMALL_FLASH is on -- 1 MiB, which include/image.mk:88 hands to mksquashfs as
+# `-b 1024k`. tools/check-cr6c.py:145 accepts 65536/131072/262144 only, so the
+# build completes and then rejects its own image. 128 KiB matches the vendor's
+# rootfs superblock on this board (notes/firmware-audit.md §7).
+CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=128
 
 # ---- WiFi 5 GHz: NOT SELECTED, and the reason got stronger on the rebase ---
 # RTL8832BR (Wi-Fi 6) on PCIe. base A has no 8832/8852/rtw89 anywhere (grep

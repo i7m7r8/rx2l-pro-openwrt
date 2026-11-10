@@ -178,6 +178,43 @@ jobs:
             }
           '
 
+      # The squashfs block size is the one image parameter that can be wrong,
+      # build green, and only be caught by the container gate at the very end of
+      # a 2.5-hour run -- which is exactly how run 42560868515 failed with
+      # "squashfs block size 1048576". The chain is invisible from seed.config
+      # alone: the overlay subtarget sets FEATURES+=small_flash, and BASE
+      # config/Config-images.in defaults TARGET_SQUASHFS_BLOCK_SIZE to 1024 when
+      # SMALL_FLASH is on (256 otherwise). include/image.mk:88 then hands it to
+      # mksquashfs as -b 1024k, and tools/check-cr6c.py:145 accepts only
+      # 65536/131072/262144. Pin the seed to a value the checker accepts.
+      - name: squashfs block size is one the container gate accepts
+        run: |
+          set +e
+          rc=0
+          want=128
+          got=$(sed -n 's/^CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=\([0-9]*\)$/\1/p' seed.config)
+          if [ -z "$got" ]; then
+            echo "!!! seed.config sets no CONFIG_TARGET_SQUASHFS_BLOCK_SIZE." >&2
+            echo "    The overlay subtarget has FEATURES+=small_flash, so the" >&2
+            echo "    default is 1024 KiB and check-cr6c.py rejects the image." >&2
+            rc=1
+          elif [ "$got" != "$want" ]; then
+            echo "!!! seed.config sets squashfs block size ${got}k, expected ${want}k" >&2
+            rc=1
+          fi
+          case "$got" in
+            64|128|256) ;;
+            *) echo "!!! ${got}k is outside check-cr6c.py's accepted 64/128/256" >&2; rc=1 ;;
+          esac
+          # the staged seed must not disagree with the live one
+          for f in port/07-usersland/seed.config.new; do
+            [ -f "$f" ] || continue
+            grep -qx "CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=${got}" "$f" || {
+              echo "!!! $f disagrees with seed.config on the block size" >&2; rc=1; }
+          done
+          [ $rc -eq 0 ] && echo "squashfs block size is ${got}k (check-cr6c.py accepts it)"
+          exit $rc
+
       # A DTS partition label is not cosmetic: the kernel splitter only runs on
       # a partition named CONFIG_MTD_SPLIT_FIRMWARE_NAME, and platform.sh writes
       # PART_NAME=firmware. Rename the node and the image flashes fine and then
