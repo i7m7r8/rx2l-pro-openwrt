@@ -158,25 +158,27 @@ platform_check_image() {
 platform_do_upgrade() {
 	local board=$(rx2lpro_board_name)
 
+	# DTS compatible is "tenda,rx2l-pro" (matches *rx2l-pro for selftest)
+	# rx2lpro_is_board() handles both spellings.
 	case "$board" in
-	tenda,rx2l-pro|rx2l-pro)
-		# One stream into one partition: no kernel/rootfs ordering
-		# trick is available (single bank, interleaved layout), so the
-		# safety lives entirely in platform_check_image above.
-		# default_do_upgrade does:
-		#   get_image "$1" | mtd ${UPGRADE_BACKUP:+-j "$UPGRADE_BACKUP"} \
-		#                  write - "$PART_NAME"
-		# -j writes the saved sysupgrade.tgz into the trailing jffs2
-		# area the cvimg "-j" marker opened, which is what mount_root
-		# formats as rootfs_data and what preinit unpacks on boot.
-		sync
-		default_do_upgrade "$1"
-		;;
+	tenda,rx2l-pro|rx2l-pro) ;;
 	*)
 		echo "Nothing to do on $board."
 		return 1
 		;;
 	esac
+
+	# One stream into one partition: no kernel/rootfs ordering
+	# trick is available (single bank, interleaved layout), so the
+	# safety lives entirely in platform_check_image above.
+	# default_do_upgrade does:
+	#   get_image "$1" | mtd ${UPGRADE_BACKUP:+-j "$UPGRADE_BACKUP"} \
+	#                  write - "$PART_NAME"
+	# -j writes the saved sysupgrade.tgz into the trailing jffs2
+	# area the cvimg "-j" marker opened, which is what mount_root
+	# formats as rootfs_data and what preinit unpacks on boot.
+	sync
+	default_do_upgrade "$1"
 }
 
 # Nothing board-specific to copy: the framework hands us $UPGRADE_BACKUP and
