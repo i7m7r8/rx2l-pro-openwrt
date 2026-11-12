@@ -1,0 +1,24 @@
+# RTL8192XB 2.4GHz WiFi driver configuration
+
+config RTL8192XB
+	tristate "Realtek RTL8192XB 2.4GHz WiFi driver"
+	depends on MAC80211 && PCI
+	select FW_LOADER
+	select CRC32
+	help
+	  This driver supports the Realtek RTL8192XB 2.4GHz WiFi chip
+	  found on Realtek RTL8197F based routers (e.g., Tenda RX2L Pro).
+	  
+	  The driver implements:
+	  - PCIe device probe and initialization
+	  - Firmware loading (rtl8192xbfw_rom.bin)
+	  - RF calibration
+	  - mac80211 integration
+	  
+	  If unsure, say M.
+
+config RTL8192XB_DEBUG
+	bool "Enable RTL8192XB debug interface"
+	depends on RTL8192XB && DEBUG_FS
+	help
+	  Enable debugfs interface for RTL8192XB driver.
