@@ -94,7 +94,7 @@ platform_check_image() {
 	# carry 0x80d00000; a vendor file would pass a magic test and then
 	# never boot, because Tenda's stage-1 jumps to the header's value.
 	hdr_start=$(rx2lpro_be32 "$img" 4)
-	[ "$hdr_start" = "81000000" ] || {
+	[ "$hdr_start" = "82000000" ] || {
 		echo "Image start_addr 0x$hdr_start is not 0x$RX2LPRO_EXPECT_START - built for a different loader."
 		return 1
 	}
