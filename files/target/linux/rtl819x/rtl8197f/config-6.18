@@ -289,5 +289,5 @@ CONFIG_WEXT_PROC=y
 # Kconfig + CONFIG_PCI_QUIRKS). Turning it on here is the next step once the
 # compile is green: PCI_DRIVERS_LEGACY is already selected for REALTEK by the
 # overlay's patches-6.18/0006-realtek-have-pci.patch.
-# CONFIG_PCI is not set
-# CONFIG_PCI_QUIRKS is not set
+CONFIG_PCI=y
+CONFIG_PCI_QUIRKS=y

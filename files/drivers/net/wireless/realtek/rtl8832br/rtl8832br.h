@@ -17,7 +17,7 @@
 
 /* Vendor/Product IDs */
 #define RTL8832BR_VENDOR_ID		0x10EC
-#define RTL8832BR_DEVICE_ID		0x8832
+#define RTL8832BR_DEVICE_ID		0xb832
 
 /* Register Offsets (from vendor halrf_config_8832br) */
 #define RTL8832BR_MAC_REG_BASE		0x0000
