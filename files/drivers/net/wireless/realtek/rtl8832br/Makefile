@@ -12,7 +12,6 @@ rtl8832br-y := \
 	rtl8832br_psd.o \
 	rtl8832br_power.o \
 	rtl8832br_reg.o \
-	rtl8832br_rf.o \
 	rtl8832br_debug.o
 
 obj-$(CONFIG_RTL8832BR_DEBUG) += rtl8832br_debugfs.o
